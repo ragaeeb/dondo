@@ -1,0 +1,119 @@
+{
+    "$schema": "https://biomejs.dev/schemas/latest/schema.json",
+    "assist": {
+        "actions": {
+            "source": {
+                "organizeImports": "on",
+                "useSortedKeys": {
+                    "level": "on",
+                    "options": {
+                        "sortOrder": "natural"
+                    }
+                }
+            }
+        }
+    },
+    "files": {
+        "ignoreUnknown": true,
+        "includes": [
+            "src/**",
+            "test/**",
+            "bin/**",
+            "*.ts",
+            "*.mjs",
+            "*.js",
+            "*.json",
+            "*.md",
+            "!!**/node_modules",
+            "!!**/dist",
+            "!!coverage"
+        ]
+    },
+    "formatter": {
+        "enabled": true,
+        "indentStyle": "space",
+        "indentWidth": 4,
+        "lineWidth": 120
+    },
+    "javascript": {
+        "formatter": {
+            "arrowParentheses": "always",
+            "bracketSameLine": false,
+            "bracketSpacing": true,
+            "quoteStyle": "single",
+            "semicolons": "always",
+            "trailingCommas": "all"
+        }
+    },
+    "json": {
+        "formatter": {
+            "enabled": true
+        }
+    },
+    "linter": {
+        "enabled": true,
+        "rules": {
+            "complexity": {
+                "noExcessiveCognitiveComplexity": "off",
+                "useArrowFunction": "error"
+            },
+            "correctness": {
+                "noUnusedImports": {
+                    "fix": "safe",
+                    "level": "error",
+                    "options": {}
+                }
+            },
+            "nursery": {
+                "noExcessiveLinesPerFile": "off",
+                "useSortedClasses": "on"
+            },
+            "recommended": true,
+            "style": {
+                "noInferrableTypes": "error",
+                "noNonNullAssertion": "off",
+                "noRestrictedImports": {
+                    "level": "error",
+                    "options": {
+                        "paths": {
+                            "bun:test": {
+                                "importNames": ["test"],
+                                "message": "Import 'test' from 'bun:test' instead of a generic 'test' module."
+                            }
+                        }
+                    }
+                },
+                "useBlockStatements": {
+                    "fix": "safe",
+                    "level": "error",
+                    "options": {}
+                },
+                "useConsistentTypeDefinitions": {
+                    "fix": "safe",
+                    "level": "error",
+                    "options": {
+                        "style": "type"
+                    }
+                },
+                "useImportType": {
+                    "fix": "safe",
+                    "level": "error",
+                    "options": {}
+                },
+                "useTemplate": "off"
+            },
+            "suspicious": {
+                "noAssignInExpressions": "off",
+                "noConsole": "off",
+                "noControlCharactersInRegex": "off",
+                "noExplicitAny": "off",
+                "noTemplateCurlyInString": "off"
+            }
+        }
+    },
+    "vcs": {
+        "clientKind": "git",
+        "enabled": true,
+        "useIgnoreFile": true
+    }
+}

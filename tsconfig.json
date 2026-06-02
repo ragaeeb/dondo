@@ -1,0 +1,22 @@
+{
+    "compilerOptions": {
+        "allowImportingTsExtensions": true,
+        "esModuleInterop": true,
+        "forceConsistentCasingInFileNames": true,
+        "ignoreDeprecations": "6.0",
+        "isolatedModules": true,
+        "jsx": "react-jsx",
+        "jsxImportSource": "preact",
+        "module": "preserve",
+        "moduleResolution": "bundler",
+        "noEmit": true,
+        "resolveJsonModule": true,
+        "skipLibCheck": true,
+        "strict": true,
+        "target": "ESNext",
+        "types": ["bun", "node"],
+        "verbatimModuleSyntax": true
+    },
+    "exclude": ["dist/**"],
+    "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "scripts/**/*.ts"]
+}
