@@ -4,7 +4,7 @@
   <img src="./icon.png" alt="Dondo icon" width="96" height="96" />
 </p>
 
-[![npm](https://img.shields.io/npm/v/dondo?color=111827)](https://www.npmjs.com/package/dondo)
+[![npm](https://img.shields.io/npm/v/dondo-donuts?color=111827)](https://www.npmjs.com/package/dondo-donuts)
 [![Bun](https://img.shields.io/badge/runtime-Bun-fbf0df?logo=bun&logoColor=000)](https://bun.sh)
 [![TypeScript](https://img.shields.io/badge/code-TypeScript-3178c6?logo=typescript&logoColor=fff)](https://www.typescriptlang.org)
 [![Preact](https://img.shields.io/badge/ui-Preact-673ab8?logo=preact&logoColor=fff)](https://preactjs.com)
@@ -25,7 +25,7 @@ Current platform support is macOS. Dondo uses the macOS `security` CLI for the l
 Install Bun 1.3 or newer, then run:
 
 ```sh
-bunx dondo
+bunx dondo-donuts
 ```
 
 Then open:

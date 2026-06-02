@@ -4,7 +4,7 @@
         "url": "https://github.com/ragaeeb"
     },
     "bin": {
-        "dondo": "./src/server.ts"
+        "dondo": "src/server.ts"
     },
     "bugs": {
         "url": "https://github.com/ragaeeb/dondo/issues"
@@ -37,7 +37,7 @@
         "keychain"
     ],
     "license": "MIT",
-    "name": "dondo",
+    "name": "dondo-donuts",
     "os": [
         "darwin"
     ],
@@ -47,10 +47,9 @@
         "url": "git+https://github.com/ragaeeb/dondo.git"
     },
     "scripts": {
-        "format": "biome check . --write",
+        "format": "biome check . --write && biome lint . --write",
         "lint": "biome lint .",
         "start": "bun src/server.ts",
-        "test": "bun test",
         "typecheck": "tsc --noEmit"
     },
     "type": "module",
