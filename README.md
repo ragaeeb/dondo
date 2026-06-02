@@ -4,6 +4,18 @@
   <img src="./icon.png" alt="Dondo icon" width="96" height="96" />
 </p>
 
+[![npm](https://img.shields.io/npm/v/dondo-donuts?color=111827)](https://www.npmjs.com/package/dondo-donuts)
+[![Bun](https://img.shields.io/badge/runtime-Bun-fbf0df?logo=bun&logoColor=000)](https://bun.sh)
+[![TypeScript](https://img.shields.io/badge/code-TypeScript-3178c6?logo=typescript&logoColor=fff)](https://www.typescriptlang.org)
+[![Preact](https://img.shields.io/badge/ui-Preact-673ab8?logo=preact&logoColor=fff)](https://preactjs.com)
+[![Biome](https://img.shields.io/badge/lint-Biome-60a5fa?logo=biome&logoColor=fff)](https://biomejs.dev)
+[![macOS](https://img.shields.io/badge/platform-macOS-111827?logo=apple&logoColor=fff)](https://www.apple.com/macos)
+[![Antigravity](https://img.shields.io/badge/switches-Antigravity-2563eb)](https://antigravity.google)
+[![Codex](https://img.shields.io/badge/switches-Codex-10a37f)](https://openai.com/codex)
+[![License: MIT](https://img.shields.io/badge/license-MIT-111827.svg)](./LICENSE)
+[![GitHub issues](https://img.shields.io/github/issues/ragaeeb/dondo?color=6f42c1)](https://github.com/ragaeeb/dondo/issues)
+[![wakatime](https://wakatime.com/badge/user/a0b906ce-b8e7-4463-8bce-383238df6d4b/project/1c226a67-6f05-42d3-a8c3-591ef0fa09fd.svg)](https://wakatime.com/badge/user/a0b906ce-b8e7-4463-8bce-383238df6d4b/project/1c226a67-6f05-42d3-a8c3-591ef0fa09fd)
+
 Dondo is a small local Bun app for saving and switching local AI tool accounts. It starts a local web UI, stores saved accounts in an encrypted local vault, and currently supports Antigravity and Codex.
 
 Current platform support is macOS. Dondo uses the macOS `security` CLI for the local vault key, and Antigravity account switching uses macOS Keychain entries.
@@ -13,7 +25,7 @@ Current platform support is macOS. Dondo uses the macOS `security` CLI for the l
 Install Bun 1.3 or newer, then run:
 
 ```sh
-bunx dondo
+bunx dondo-donuts
 ```
 
 Then open:
@@ -109,7 +121,7 @@ CODEX_AUTH_PATH=~/.codex/auth.json
 
 `DONDO_PORT` takes precedence over `PORT`. `ANTIGRAVITY_KEYCHAIN` is passed as the keychain argument to macOS `security` commands, for example `login.keychain-db` or an absolute keychain path.
 
-The default Google OAuth constants are the public upstream Antigravity desktop-client values. You can override them with `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` if upstream changes.
+Antigravity limit refreshes require `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. Dondo does not ship Google OAuth credentials in source.
 
 ## Local API
 
