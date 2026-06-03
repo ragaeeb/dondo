@@ -7,6 +7,7 @@ type FetchLimitsResult = {
 };
 
 const REQUEST_TIMEOUT_MS = 15_000;
+const EXPIRY_GRACE_MS = 60_000;
 const TOKEN_PREFIX = 'go-keyring-base64:';
 
 const asObject = (value: unknown): JsonObject => {
@@ -15,6 +16,10 @@ const asObject = (value: unknown): JsonObject => {
 
 const stringValue = (value: unknown) => (typeof value === 'string' ? value : undefined);
 const numberValue = (value: unknown) => (typeof value === 'number' ? value : undefined);
+const staleTokenQuota = {
+    error: 'Saved Antigravity access token is expired or rejected. Use this account in Antigravity, then click Sync current on this saved row.',
+    ok: false as const,
+};
 
 export const decodeToken = (password: string): TokenPayload | null => {
     try {
@@ -66,12 +71,24 @@ export const fetchLimits = async (snap: Snapshot): Promise<FetchLimitsResult> =>
     if (!token?.access_token) {
         return { quota: { error: 'No access token in snapshot', ok: false } };
     }
+    const expiry = token.expiry ? Date.parse(token.expiry) : Number.NaN;
+    if (!Number.isNaN(expiry) && expiry <= Date.now() + EXPIRY_GRACE_MS) {
+        return { quota: staleTokenQuota };
+    }
 
-    const projectData = asObject(
-        await postJson(LOAD_PROJECT_URL, token.access_token, {
-            metadata: { ideType: 'ANTIGRAVITY' },
-        }),
-    );
+    let projectData: JsonObject;
+    try {
+        projectData = asObject(
+            await postJson(LOAD_PROJECT_URL, token.access_token, {
+                metadata: { ideType: 'ANTIGRAVITY' },
+            }),
+        );
+    } catch (error) {
+        if (String(error).includes('HTTP 401')) {
+            return { quota: staleTokenQuota };
+        }
+        throw error;
+    }
     const project = projectData.cloudaicompanionProject;
     const paidTier = asObject(projectData.paidTier);
     const currentTier = asObject(projectData.currentTier);
@@ -110,6 +127,9 @@ export const fetchLimits = async (snap: Snapshot): Promise<FetchLimitsResult> =>
             };
         } catch (error) {
             lastError = String(error);
+            if (lastError.includes('HTTP 401')) {
+                return { quota: staleTokenQuota };
+            }
             if (!/HTTP (?:429|5\d\d|403)/.test(lastError)) {
                 throw error;
             }

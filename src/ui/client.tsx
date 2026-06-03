@@ -41,6 +41,8 @@ const api = async <T,>(path: string, body?: unknown): Promise<T> => {
 };
 
 const formatDate = (value: string) => (value ? new Date(value).toLocaleString() : '');
+const confirmSyncCurrent = (platform: string, key: string) =>
+    confirm(`Replace "${key}" with the currently active ${platform} credentials? This overwrites the saved account.`);
 
 const ModelCard = ({ model }: { model: [string, ModelLimit] }) => {
     const [name, data] = model;
@@ -67,11 +69,13 @@ const AccountRow = ({
     pending,
     onLoad,
     onRefresh,
+    onSync,
 }: {
     entry: AccountEntry;
     pending: boolean;
     onLoad: (key: string) => void;
     onRefresh: (key: string) => void;
+    onSync: (key: string) => void;
 }) => (
     <article class="row">
         <div class="row-head">
@@ -89,6 +93,9 @@ const AccountRow = ({
             <div class="actions">
                 <button type="button" disabled={pending} onClick={() => onRefresh(entry.key)}>
                     Refresh
+                </button>
+                <button type="button" disabled={pending} onClick={() => onSync(entry.key)}>
+                    Sync current
                 </button>
                 <button type="button" disabled={pending} onClick={() => onLoad(entry.key)}>
                     Load
@@ -170,6 +177,23 @@ const AntigravityPanel = ({ active }: { active: boolean }) => {
         }
     };
 
+    const syncCurrent = async (entryKey: string) => {
+        if (!confirmSyncCurrent('Antigravity', entryKey)) {
+            return;
+        }
+        setStatus(`Syncing current Antigravity auth to ${entryKey}...`);
+        setPendingKey(entryKey);
+        try {
+            await api('/api/antigravity/save', { key: entryKey });
+            await refreshOne(entryKey);
+            setStatus(`Synced ${entryKey}`);
+        } catch (error) {
+            setStatus(error instanceof Error ? error.message : String(error));
+        } finally {
+            setPendingKey('');
+        }
+    };
+
     const clear = async () => {
         if (!confirm('Clear the live Antigravity keychain item and local auth state?')) {
             return;
@@ -229,6 +253,7 @@ const AntigravityPanel = ({ active }: { active: boolean }) => {
                             pending={pendingKey === entry.key}
                             onLoad={load}
                             onRefresh={refreshOne}
+                            onSync={syncCurrent}
                         />
                     ))
                 ) : (
@@ -302,6 +327,23 @@ const CodexPanel = ({ active }: { active: boolean }) => {
         }
     };
 
+    const syncCurrent = async (entryKey: string) => {
+        if (!confirmSyncCurrent('Codex', entryKey)) {
+            return;
+        }
+        setStatus(`Syncing current Codex auth to ${entryKey}...`);
+        setPendingKey(entryKey);
+        try {
+            await api('/api/codex/save', { key: entryKey });
+            await refreshOne(entryKey);
+            setStatus(`Synced ${entryKey}`);
+        } catch (error) {
+            setStatus(error instanceof Error ? error.message : String(error));
+        } finally {
+            setPendingKey('');
+        }
+    };
+
     useEffect(() => {
         if (!active || loaded) {
             return;
@@ -342,6 +384,7 @@ const CodexPanel = ({ active }: { active: boolean }) => {
                             pending={pendingKey === entry.key}
                             onLoad={load}
                             onRefresh={refreshOne}
+                            onSync={syncCurrent}
                         />
                     ))
                 ) : (

@@ -231,12 +231,12 @@ const handleAsset = (url: URL, assets: Assets) => {
     }
     if (url.pathname === '/assets/app.js') {
         return withHeaders(new Response(assets.appJs), {
-            'Cache-Control': 'max-age=3600',
+            'Cache-Control': 'no-store',
             'Content-Type': 'text/javascript',
         });
     }
     if (url.pathname === '/assets/styles.css') {
-        return withHeaders(new Response(assets.css), { 'Cache-Control': 'max-age=3600', 'Content-Type': 'text/css' });
+        return withHeaders(new Response(assets.css), { 'Cache-Control': 'no-store', 'Content-Type': 'text/css' });
     }
     if (url.pathname === '/icon.svg') {
         return withHeaders(new Response(assets.iconSvg), {

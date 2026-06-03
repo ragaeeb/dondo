@@ -86,19 +86,43 @@ it('should surface Codex usage 401 without using the refresh token', async () =>
         return new Response('', { status: 401 });
     }) as typeof fetch;
 
-    await expect(
-        fetchCodexLimits(
-            JSON.stringify({
-                auth_mode: 'chatgpt',
-                tokens: {
-                    access_token: jwt({ exp: 1 }),
-                    account_id: 'account',
-                    refresh_token: 'refresh',
-                },
-            }),
-        ),
-    ).rejects.toThrow('HTTP 401');
+    const result = await fetchCodexLimits(
+        JSON.stringify({
+            auth_mode: 'chatgpt',
+            tokens: {
+                access_token: jwt({ exp: Math.floor(Date.now() / 1000) + 3600 }),
+                account_id: 'account',
+                refresh_token: 'refresh',
+            },
+        }),
+    );
 
+    expect(result.quota).toEqual({
+        error: 'Saved Codex access token is expired or rejected. Use this account in Codex, then click Sync current on this saved row.',
+        ok: false,
+    });
     expect(calls.filter((call) => call.includes('/wham/usage'))).toHaveLength(1);
     expect(calls.some((call) => call.includes('/oauth/token'))).toBe(false);
+});
+
+it('should not call Codex usage when the saved access token is expired', async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+        calls.push(String(url));
+        return Response.json({});
+    }) as typeof fetch;
+
+    const result = await fetchCodexLimits(
+        JSON.stringify({
+            auth_mode: 'chatgpt',
+            tokens: {
+                access_token: jwt({ exp: 1 }),
+                account_id: 'account',
+                refresh_token: 'refresh',
+            },
+        }),
+    );
+
+    expect(result.quota.ok).toBe(false);
+    expect(calls).toHaveLength(0);
 });

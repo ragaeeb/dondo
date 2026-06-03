@@ -42,7 +42,7 @@ it('should fetch Antigravity limits without refreshing OAuth tokens', async () =
         auth_method: 'oauth-personal',
         token: {
             access_token: 'access',
-            expiry: '2000-01-01T00:00:00.000Z',
+            expiry: '2999-01-01T00:00:00.000Z',
             refresh_token: 'refresh',
         },
     };
@@ -78,18 +78,50 @@ it('should surface Antigravity usage 401 without using the refresh token', async
     };
     const password = `go-keyring-base64:${Buffer.from(JSON.stringify(payload)).toString('base64')}`;
 
-    await expect(
-        fetchLimits({
-            account: 'antigravity',
-            createdAt: '',
-            kind: 'Generic Password',
-            label: 'gemini',
-            password,
-            service: 'gemini',
-            updatedAt: '',
-        }),
-    ).rejects.toThrow('HTTP 401');
+    const result = await fetchLimits({
+        account: 'antigravity',
+        createdAt: '',
+        kind: 'Generic Password',
+        label: 'gemini',
+        password,
+        service: 'gemini',
+        updatedAt: '',
+    });
 
+    expect(result.quota).toEqual({
+        error: 'Saved Antigravity access token is expired or rejected. Use this account in Antigravity, then click Sync current on this saved row.',
+        ok: false,
+    });
     expect(calls).toHaveLength(1);
     expect(calls.some((call) => call.includes('/token'))).toBe(false);
+});
+
+it('should not call Antigravity usage when the saved access token is expired', async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+        calls.push(String(url));
+        return Response.json({});
+    }) as typeof fetch;
+    const payload = {
+        auth_method: 'oauth-personal',
+        token: {
+            access_token: 'access',
+            expiry: '2000-01-01T00:00:00.000Z',
+            refresh_token: 'refresh',
+        },
+    };
+    const password = `go-keyring-base64:${Buffer.from(JSON.stringify(payload)).toString('base64')}`;
+
+    const result = await fetchLimits({
+        account: 'antigravity',
+        createdAt: '',
+        kind: 'Generic Password',
+        label: 'gemini',
+        password,
+        service: 'gemini',
+        updatedAt: '',
+    });
+
+    expect(result.quota.ok).toBe(false);
+    expect(calls).toHaveLength(0);
 });

@@ -38,6 +38,7 @@ type CodexLimitFetch = {
 };
 
 const REQUEST_TIMEOUT_MS = 15_000;
+const EXPIRY_GRACE_SECONDS = 60;
 
 const parseAuth = (auth: string): CodexAuth => {
     try {
@@ -46,6 +47,28 @@ const parseAuth = (auth: string): CodexAuth => {
         throw publicError(400, 'Saved Codex auth JSON is malformed');
     }
 };
+
+const parseJwtPayload = (token: string): Record<string, unknown> | null => {
+    const part = token.split('.')[1];
+    if (!part) {
+        return null;
+    }
+    try {
+        return JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as Record<string, unknown>;
+    } catch {
+        return null;
+    }
+};
+
+const accessTokenExpired = (token: string) => {
+    const exp = parseJwtPayload(token)?.exp;
+    return typeof exp === 'number' && exp <= Math.floor(Date.now() / 1000) + EXPIRY_GRACE_SECONDS;
+};
+
+const staleTokenQuota = (provider: string) => ({
+    error: `Saved ${provider} access token is expired or rejected. Use this account in ${provider}, then click Sync current on this saved row.`,
+    ok: false as const,
+});
 
 const codexHeaders = (accessToken: string, accountId?: string) => ({
     ...(accountId ? { 'chatgpt-account-id': accountId } : {}),
@@ -126,12 +149,18 @@ const requestUsage = async (auth: CodexAuth) => {
     if (!accessToken) {
         return { error: 'No Codex access token in snapshot', ok: false as const };
     }
+    if (accessTokenExpired(accessToken)) {
+        return staleTokenQuota('Codex');
+    }
 
     const res = await fetch(CODEX_USAGE_URL, {
         headers: codexHeaders(accessToken, auth.tokens?.account_id),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!res.ok) {
+        if (res.status === 401) {
+            return staleTokenQuota('Codex');
+        }
         throw new Error(`HTTP ${res.status}`);
     }
     return usageToLimitResult((await res.json()) as CodexUsagePayload);
