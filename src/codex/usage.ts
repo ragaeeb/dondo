@@ -1,4 +1,4 @@
-import { CODEX_CLIENT_ID, CODEX_TOKEN_URL, CODEX_USAGE_URL, CODEX_USER_AGENT } from '../config.ts';
+import { CODEX_USAGE_URL, CODEX_USER_AGENT } from '../config.ts';
 import { publicError } from '../errors.ts';
 import type { LimitResult } from '../types.ts';
 
@@ -34,12 +34,10 @@ type CodexWindow = {
 };
 
 type CodexLimitFetch = {
-    auth?: string;
     quota: LimitResult;
 };
 
 const REQUEST_TIMEOUT_MS = 15_000;
-const EXPIRY_GRACE_SECONDS = 60;
 
 const parseAuth = (auth: string): CodexAuth => {
     try {
@@ -47,61 +45,6 @@ const parseAuth = (auth: string): CodexAuth => {
     } catch {
         throw publicError(400, 'Saved Codex auth JSON is malformed');
     }
-};
-
-export const parseJwtPayload = (token: string): Record<string, unknown> | null => {
-    const part = token.split('.')[1];
-    if (!part) {
-        return null;
-    }
-    try {
-        return JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as Record<string, unknown>;
-    } catch {
-        return null;
-    }
-};
-
-export const tokenExpiredOrNearExpiry = (token: string) => {
-    const exp = parseJwtPayload(token)?.exp;
-    return typeof exp === 'number' ? exp <= Math.floor(Date.now() / 1000) + EXPIRY_GRACE_SECONDS : true;
-};
-
-const refreshTokens = async (refreshToken: string) => {
-    const res = await fetch(CODEX_TOKEN_URL, {
-        body: new URLSearchParams({
-            client_id: CODEX_CLIENT_ID,
-            grant_type: 'refresh_token',
-            refresh_token: refreshToken,
-        }),
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        method: 'POST',
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-        throw new Error(`Token refresh failed: HTTP ${res.status}`);
-    }
-    return (await res.json()) as { access_token: string; id_token?: string; refresh_token?: string };
-};
-
-const ensureFreshAuth = async (auth: CodexAuth, force = false) => {
-    const tokens = auth.tokens;
-    const accessToken = tokens?.access_token;
-    const refreshToken = tokens?.refresh_token;
-    if (!refreshToken || (!force && accessToken && !tokenExpiredOrNearExpiry(accessToken))) {
-        return auth;
-    }
-
-    const refreshed = await refreshTokens(refreshToken);
-    return {
-        ...auth,
-        last_refresh: new Date().toISOString(),
-        tokens: {
-            ...tokens,
-            access_token: refreshed.access_token,
-            id_token: refreshed.id_token ?? tokens.id_token,
-            refresh_token: refreshed.refresh_token ?? refreshToken,
-        },
-    };
 };
 
 const codexHeaders = (accessToken: string, accountId?: string) => ({
@@ -200,20 +143,5 @@ export const fetchCodexLimits = async (authText: string): Promise<CodexLimitFetc
         return { quota: { error: 'Codex usage is only available for ChatGPT login accounts', ok: false } };
     }
 
-    const freshAuth = await ensureFreshAuth(auth);
-    try {
-        return {
-            auth: freshAuth === auth ? undefined : JSON.stringify(freshAuth, null, 2),
-            quota: await requestUsage(freshAuth),
-        };
-    } catch (error) {
-        if (!String(error).includes('HTTP 401') || !freshAuth.tokens?.refresh_token) {
-            throw error;
-        }
-        const refreshedAuth = await ensureFreshAuth(freshAuth, true);
-        return {
-            auth: JSON.stringify(refreshedAuth, null, 2),
-            quota: await requestUsage(refreshedAuth),
-        };
-    }
+    return { quota: await requestUsage(auth) };
 };

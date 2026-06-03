@@ -56,12 +56,8 @@ const updateMissingOrStaleLimits = async (vault: AppVault, force: boolean, targe
             continue;
         }
         const result = await fetchCodexLimits(snap.auth).catch((error) => ({
-            auth: undefined,
             quota: cleanLimitError(error),
         }));
-        if (result.auth) {
-            vault.codex.data[key] = { ...snap, auth: result.auth, updatedAt: new Date().toISOString() };
-        }
         vault.codex.limits[key] = { fetchedAt: new Date().toISOString(), quota: result.quota };
         changed = true;
     }

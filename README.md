@@ -114,14 +114,12 @@ ANTIGRAVITY_SERVICE=gemini
 ANTIGRAVITY_ACCOUNT=antigravity
 ANTIGRAVITY_KEYCHAIN=login.keychain-db
 ANTIGRAVITY_VERSION=2.0.3
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
 CODEX_AUTH_PATH=~/.codex/auth.json
 ```
 
 `DONDO_PORT` takes precedence over `PORT`. `ANTIGRAVITY_KEYCHAIN` is passed as the keychain argument to macOS `security` commands, for example `login.keychain-db` or an absolute keychain path.
 
-Antigravity limit refreshes require `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. Dondo does not ship Google OAuth credentials in source.
+Limit refreshes only call the provider usage endpoints with the saved access token. They do not use refresh tokens or rotate saved auth credentials.
 
 ## Local API
 

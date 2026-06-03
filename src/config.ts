@@ -39,9 +39,6 @@ export const ANTIGRAVITY_SERVICE = env('ANTIGRAVITY_SERVICE') ?? 'gemini';
 export const ANTIGRAVITY_ACCOUNT = env('ANTIGRAVITY_ACCOUNT') ?? 'antigravity';
 
 export const ANTIGRAVITY_VERSION = env('ANTIGRAVITY_VERSION') ?? '2.0.3';
-export const GOOGLE_CLIENT_ID = env('GOOGLE_CLIENT_ID') ?? '';
-export const GOOGLE_CLIENT_SECRET = env('GOOGLE_CLIENT_SECRET') ?? '';
-export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export const LOAD_PROJECT_URL = 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist';
 export const QUOTA_URLS = [
     'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels',
@@ -49,7 +46,5 @@ export const QUOTA_URLS = [
     'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
 ];
 
-export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
-export const CODEX_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 export const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 export const CODEX_USER_AGENT = 'codex-cli/1.0.0';
