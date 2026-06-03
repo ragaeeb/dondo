@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'bun:test';
-import { fetchCodexLimits, parseJwtPayload, tokenExpiredOrNearExpiry, usageToLimitResult } from './usage.ts';
+import { fetchCodexLimits, usageToLimitResult } from './usage.ts';
 
 const jwt = (payload: object) =>
     ['header', Buffer.from(JSON.stringify(payload)).toString('base64url'), 'signature'].join('.');
@@ -34,13 +34,6 @@ it('should map Codex usage windows into limit cards without null entries', () =>
     expect(result.models['codex-credits']?.percentage).toBe(0);
 });
 
-it('should parse JWT payloads and detect near-expired tokens', () => {
-    expect(parseJwtPayload(jwt({ exp: 123, sub: 'user' }))).toEqual({ exp: 123, sub: 'user' });
-    expect(tokenExpiredOrNearExpiry(jwt({ exp: Math.floor(Date.now() / 1000) + 30 }))).toBe(true);
-    expect(tokenExpiredOrNearExpiry(jwt({ exp: Math.floor(Date.now() / 1000) + 300 }))).toBe(false);
-    expect(tokenExpiredOrNearExpiry('')).toBe(true);
-});
-
 it('should not render a zero-minute usage window suffix', () => {
     const result = usageToLimitResult({
         rate_limit: {
@@ -55,20 +48,11 @@ it('should not render a zero-minute usage window suffix', () => {
     expect(result.models['codex-primary']?.displayName).toBe('Primary Limit');
 });
 
-it('should force refresh Codex tokens after a 401 usage response', async () => {
+it('should not refresh Codex OAuth tokens while fetching usage', async () => {
     const calls: string[] = [];
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
         const target = String(url);
         calls.push(target);
-        if (target.includes('/oauth/token')) {
-            return Response.json({
-                access_token: jwt({ exp: Math.floor(Date.now() / 1000) + 3600 }),
-                refresh_token: 'next-refresh',
-            });
-        }
-        if (calls.filter((call) => call.includes('/wham/usage')).length === 1) {
-            return new Response('', { status: 401 });
-        }
         expect((init?.headers as Record<string, string>).Authorization).toContain('Bearer ');
         return Response.json({
             plan_type: 'plus',
@@ -89,8 +73,32 @@ it('should force refresh Codex tokens after a 401 usage response', async () => {
         }),
     );
 
-    expect(result.auth).toContain('next-refresh');
     expect(result.quota.ok).toBe(true);
-    expect(calls.filter((call) => call.includes('/wham/usage'))).toHaveLength(2);
-    expect(calls.filter((call) => call.includes('/oauth/token'))).toHaveLength(1);
+    expect(calls.filter((call) => call.includes('/wham/usage'))).toHaveLength(1);
+    expect(calls.some((call) => call.includes('/oauth/token'))).toBe(false);
+});
+
+it('should surface Codex usage 401 without using the refresh token', async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+        const target = String(url);
+        calls.push(target);
+        return new Response('', { status: 401 });
+    }) as typeof fetch;
+
+    await expect(
+        fetchCodexLimits(
+            JSON.stringify({
+                auth_mode: 'chatgpt',
+                tokens: {
+                    access_token: jwt({ exp: 1 }),
+                    account_id: 'account',
+                    refresh_token: 'refresh',
+                },
+            }),
+        ),
+    ).rejects.toThrow('HTTP 401');
+
+    expect(calls.filter((call) => call.includes('/wham/usage'))).toHaveLength(1);
+    expect(calls.some((call) => call.includes('/oauth/token'))).toBe(false);
 });
