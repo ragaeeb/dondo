@@ -16,7 +16,7 @@
 [![GitHub issues](https://img.shields.io/github/issues/ragaeeb/dondo?color=6f42c1)](https://github.com/ragaeeb/dondo/issues)
 [![wakatime](https://wakatime.com/badge/user/a0b906ce-b8e7-4463-8bce-383238df6d4b/project/1c226a67-6f05-42d3-a8c3-591ef0fa09fd.svg)](https://wakatime.com/badge/user/a0b906ce-b8e7-4463-8bce-383238df6d4b/project/1c226a67-6f05-42d3-a8c3-591ef0fa09fd)
 
-Dondo is a small local Bun app for saving and switching local AI tool accounts. It starts a local web UI, stores saved accounts in an encrypted local vault, and currently supports Antigravity and Codex.
+Dondo is a small local Bun app for saving and switching local AI tool accounts. It starts a local web UI, stores saved accounts in an encrypted local vault, and currently supports Antigravity, Codex, and MiniMax.
 
 Current platform support is macOS. Dondo uses the macOS `security` CLI for the local vault key, and Antigravity account switching uses macOS Keychain entries.
 
@@ -74,6 +74,10 @@ Vault shape:
     "codex": {
         "data": {},
         "limits": {}
+    },
+    "minimax": {
+        "data": {},
+        "limits": {}
     }
 }
 ```
@@ -85,6 +89,10 @@ Vault shape:
 `codex.data` stores encrypted snapshots of `~/.codex/auth.json`. Loading a saved Codex account writes that snapshot back to `~/.codex/auth.json` with `0600` permissions.
 
 `codex.limits` stores cached Codex ChatGPT usage data. Dondo fetches missing limits on first load and refreshes cached limits only when the UI `Refresh limits` button is used.
+
+`minimax.data` stores encrypted snapshots of `~/Library/Application Support/MiniMax Agent/minimax-agent-config.json`. Loading a saved MiniMax account writes that snapshot back to the same path with `0600` permissions.
+
+`minimax.limits` stores mocked MiniMax limit data. The current implementation records the load or refresh time because the MiniMax rate-limit endpoint is not yet known.
 
 Each limit cache entry has this shape:
 
@@ -114,12 +122,14 @@ ANTIGRAVITY_SERVICE=gemini
 ANTIGRAVITY_ACCOUNT=antigravity
 ANTIGRAVITY_KEYCHAIN=login.keychain-db
 ANTIGRAVITY_VERSION=2.0.3
+ANTIGRAVITY_LANGUAGE_SERVER_PATH=/Applications/Antigravity.app/Contents/Resources/bin/language_server
 CODEX_AUTH_PATH=~/.codex/auth.json
+MINIMAX_CONFIG_PATH=~/Library/Application Support/MiniMax Agent/minimax-agent-config.json
 ```
 
 `DONDO_PORT` takes precedence over `PORT`. `ANTIGRAVITY_KEYCHAIN` is passed as the keychain argument to macOS `security` commands, for example `login.keychain-db` or an absolute keychain path.
 
-Limit refreshes only call the provider usage endpoints with the saved access token. They do not use refresh tokens or rotate saved auth credentials.
+Antigravity limit refreshes can use the saved Google refresh token to rotate an expired saved access token, then write the refreshed token blob back to the encrypted vault entry. Dondo discovers Antigravity's Google OAuth client from the local Antigravity language server binary. Codex limit refreshes only call the usage endpoint with the saved access token.
 
 ## Local API
 
@@ -134,6 +144,10 @@ All API requests must be sent to localhost. Mutating routes require `POST` with 
 - `POST /api/codex/limits/refresh` with optional `{ "key": "label" }`
 - `POST /api/codex/save` with `{ "key": "label" }`
 - `POST /api/codex/load` with `{ "key": "label" }`
+- `GET /api/minimax/state`
+- `POST /api/minimax/limits/refresh` with optional `{ "key": "label" }`
+- `POST /api/minimax/save` with `{ "key": "label" }`
+- `POST /api/minimax/load` with `{ "key": "label" }`
 
 `Clear live` deletes the live Antigravity Keychain item plus these local Antigravity state paths:
 
