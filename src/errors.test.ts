@@ -3,12 +3,13 @@ import { assertAccountKey, redactSecrets } from './errors.ts';
 
 it('should redact token-shaped values from public errors', () => {
     const redacted = redactSecrets(
-        'Bearer ya29.secret_token {"access_token":"abc","refresh_token":"def"} password: "plain"',
+        'Bearer ya29.secret_token {"access_token":"abc","refresh_token":"def","accessToken":"ghi"} password: "plain"',
     );
 
     expect(redacted).not.toContain('secret_token');
     expect(redacted).not.toContain('abc');
     expect(redacted).not.toContain('def');
+    expect(redacted).not.toContain('ghi');
     expect(redacted).not.toContain('plain');
     expect(redacted).toContain('Bearer [redacted]');
 });

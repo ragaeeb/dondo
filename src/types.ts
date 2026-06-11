@@ -48,7 +48,16 @@ export type CodexSnapshot = {
 
 export type CodexVault = VaultSection<CodexSnapshot>;
 
+export type MinimaxSnapshot = {
+    config: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type MinimaxVault = VaultSection<MinimaxSnapshot>;
+
 export type AppVault = {
     antigravity: PlatformVault;
     codex: CodexVault;
+    minimax: MinimaxVault;
 };

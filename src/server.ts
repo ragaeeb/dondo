@@ -4,6 +4,7 @@ import { antigravityState, clearAntigravity, loadAntigravity, saveAntigravity } 
 import { codexState, loadCodex, saveCodex } from './codex/service.ts';
 import { HOST, PORT } from './config.ts';
 import { errorMessage, errorStatus, publicError } from './errors.ts';
+import { loadMinimax, minimaxState, saveMinimax } from './minimax/service.ts';
 import { renderHtml } from './ui/html.ts';
 
 type Assets = {
@@ -205,6 +206,32 @@ const routes = new Map<string, Route>([
         {
             handler: async (req) => {
                 await loadCodex(await requiredKey(req));
+                return json({ ok: true });
+            },
+        },
+    ],
+    ['GET /api/minimax/state', { handler: async () => json(await minimaxState()) }],
+    [
+        'POST /api/minimax/limits/refresh',
+        {
+            handler: async (req) =>
+                json(await minimaxState({ refreshLimitKey: await optionalKey(req), refreshLimits: true })),
+        },
+    ],
+    [
+        'POST /api/minimax/save',
+        {
+            handler: async (req) => {
+                await saveMinimax(await requiredKey(req));
+                return json({ ok: true });
+            },
+        },
+    ],
+    [
+        'POST /api/minimax/load',
+        {
+            handler: async (req) => {
+                await loadMinimax(await requiredKey(req));
                 return json({ ok: true });
             },
         },

@@ -45,8 +45,12 @@ const updateMissingOrStaleLimits = async (vault: AppVault, force: boolean, targe
             continue;
         }
         const result = await fetchLimits(snap).catch((error) => ({
+            password: undefined,
             quota: cleanLimitError(error),
         }));
+        if (result.password) {
+            vault.antigravity.data[key] = { ...snap, password: result.password, updatedAt: new Date().toISOString() };
+        }
         vault.antigravity.limits[key] = { fetchedAt: new Date().toISOString(), quota: result.quota };
         changed = true;
     }

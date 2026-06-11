@@ -15,6 +15,7 @@ it('should read a missing vault as nested empty platform sections', async () => 
         await expect(readVault(path)).resolves.toEqual({
             antigravity: { data: {}, limits: {} },
             codex: { data: {}, limits: {} },
+            minimax: { data: {}, limits: {} },
         });
     } finally {
         await rm(dir, { force: true, recursive: true });
@@ -24,7 +25,14 @@ it('should read a missing vault as nested empty platform sections', async () => 
 it('should write the vault with private file permissions', async () => {
     const { dir, path } = await tempVault();
     try {
-        await writeVault({ antigravity: { data: {}, limits: {} }, codex: { data: {}, limits: {} } }, path);
+        await writeVault(
+            {
+                antigravity: { data: {}, limits: {} },
+                codex: { data: {}, limits: {} },
+                minimax: { data: {}, limits: {} },
+            },
+            path,
+        );
 
         expect((await stat(path)).mode & 0o777).toBe(0o600);
     } finally {
@@ -61,11 +69,19 @@ it('should serialize queued vault updates', async () => {
                 };
                 return { result: undefined };
             }, path),
+            updateVault(async (vault) => {
+                vault.minimax.limits.c = {
+                    fetchedAt: 'c',
+                    quota: { error: 'c', ok: false },
+                };
+                return { result: undefined };
+            }, path),
         ]);
 
         const vault = await readVault(path);
         expect(vault.antigravity.limits.a?.fetchedAt).toBe('a');
         expect(vault.codex.limits.b?.fetchedAt).toBe('b');
+        expect(vault.minimax.limits.c?.fetchedAt).toBe('c');
     } finally {
         await rm(dir, { force: true, recursive: true });
     }

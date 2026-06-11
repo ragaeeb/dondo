@@ -13,7 +13,7 @@ export const redactSecrets = (value: unknown) => {
         .replace(/Bearer\s+[^"\s]+/g, 'Bearer [redacted]')
         .replace(/password:\s*"[^"]*"/gi, 'password: "[redacted]"')
         .replace(
-            /(["']?(?:access_token|refresh_token|id_token|OPENAI_API_KEY)["']?\s*[:=]\s*["'])[^"']+(["'])/gi,
+            /(["']?(?:access_token|refresh_token|id_token|accessToken|OPENAI_API_KEY)["']?\s*[:=]\s*["'])[^"']+(["'])/gi,
             '$1[redacted]$2',
         );
 };
