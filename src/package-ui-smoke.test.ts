@@ -83,7 +83,7 @@ const waitForHealthyUi = async (url: string) => {
 };
 
 describe('packaged UI smoke', () => {
-    it('should launch the UI server through the packaged bunx dondo path', async () => {
+    it('should launch the UI server through the packaged bunx package-name path', async () => {
         const manifest = (await Bun.file('package.json').json()) as PackageManifest;
         const tempDir = await mkdtemp(join(tmpdir(), 'dondo-packaged-ui-smoke-'));
         const port = await getAvailablePort();
@@ -92,7 +92,7 @@ describe('packaged UI smoke', () => {
             await runCommand(['bun', 'pm', 'pack', '--destination', tempDir], process.cwd());
             await Bun.write(join(tempDir, 'package.json'), '{"name":"dondo-smoke","private":true}\n');
 
-            const proc = Bun.spawn(['bunx', '--package', packageTarballPath(tempDir, manifest), 'dondo'], {
+            const proc = Bun.spawn(['bunx', '--package', packageTarballPath(tempDir, manifest), manifest.name], {
                 cwd: tempDir,
                 env: {
                     ...process.env,

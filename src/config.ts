@@ -31,7 +31,8 @@ export const DATA_DIR = env('DONDO_DATA_DIR') ?? appDataDir();
 export const VAULT_PATH = env('DONDO_VAULT') ?? env('ANTIGRAVITY_VAULT') ?? join(DATA_DIR, 'vault.json');
 export const CODEX_AUTH_PATH = env('CODEX_AUTH_PATH') ?? join(homedir(), '.codex', 'auth.json');
 export const MINIMAX_CONFIG_PATH =
-    env('MINIMAX_CONFIG_PATH') ?? join(homedir(), 'Library', 'Application Support', 'MiniMax Agent', 'minimax-agent-config.json');
+    env('MINIMAX_CONFIG_PATH') ??
+    join(homedir(), 'Library', 'Application Support', 'MiniMax Agent', 'minimax-agent-config.json');
 
 export const VAULT_KEY_SERVICE = 'dondo';
 export const VAULT_KEY_ACCOUNT = 'vault-key';

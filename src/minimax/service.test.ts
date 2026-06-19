@@ -54,7 +54,7 @@ it('should save and load MiniMax configs with mocked load-time limits', async ()
     try {
         await Bun.write(
             configPath,
-            JSON.stringify({ user: { userID: 'saved-user' }, tokens: { accessToken: 'dummy-token' } }),
+            JSON.stringify({ tokens: { accessToken: 'dummy-token' }, user: { userID: 'saved-user' } }),
         );
 
         const result = await runMiniMaxScript({

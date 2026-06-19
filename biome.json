@@ -65,10 +65,8 @@
                 }
             },
             "nursery": {
-                "noExcessiveLinesPerFile": "off",
                 "useSortedClasses": "on"
             },
-            "recommended": true,
             "style": {
                 "noInferrableTypes": "error",
                 "noNonNullAssertion": "off",
