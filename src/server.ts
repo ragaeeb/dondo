@@ -5,7 +5,7 @@ import { codexState, loadCodex, saveCodex } from './codex/service.ts';
 import { HOST, PORT } from './config.ts';
 import { errorMessage, errorStatus, publicError } from './errors.ts';
 import { loadMinimax, minimaxState, saveMinimax } from './minimax/service.ts';
-import { exportPlatformWallet, type ExportPlatform } from './storage/export.ts';
+import { type ExportPlatform, exportPlatformWallet } from './storage/export.ts';
 import { renderHtml } from './ui/html.ts';
 
 type Assets = {

@@ -1,58 +1,58 @@
 {
-  "author": {
-    "name": "Ragaeeb Haq",
-    "url": "https://github.com/ragaeeb"
-  },
-  "bin": {
-    "dondo": "src/server.ts",
-    "dondo-donuts": "src/server.ts"
-  },
-  "bugs": {
-    "url": "https://github.com/ragaeeb/dondo/issues"
-  },
-  "dependencies": {
-    "preact": "^10.29.7"
-  },
-  "description": "Minimal local UI for switching Antigravity and Codex accounts.",
-  "devDependencies": {
-    "@biomejs/biome": "^2.5.3",
-    "@types/bun": "^1.3.14",
-    "typescript": "^7.0.2"
-  },
-  "engines": {
-    "bun": ">=1.3.14"
-  },
-  "files": [
-    "LICENSE",
-    "README.md",
-    "icon.png",
-    "icon.svg",
-    "src"
-  ],
-  "homepage": "https://github.com/ragaeeb/dondo",
-  "keywords": [
-    "antigravity",
-    "codex",
-    "account-switcher",
-    "bun",
-    "keychain"
-  ],
-  "license": "MIT",
-  "name": "dondo-donuts",
-  "os": [
-    "darwin"
-  ],
-  "packageManager": "bun@1.3.14",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ragaeeb/dondo.git"
-  },
-  "scripts": {
-    "format": "biome check . --write && biome lint . --write",
-    "lint": "biome lint .",
-    "start": "bun src/server.ts",
-    "typecheck": "tsc --noEmit"
-  },
-  "type": "module",
-  "version": "0.3.0"
+    "author": {
+        "name": "Ragaeeb Haq",
+        "url": "https://github.com/ragaeeb"
+    },
+    "bin": {
+        "dondo": "src/server.ts",
+        "dondo-donuts": "src/server.ts"
+    },
+    "bugs": {
+        "url": "https://github.com/ragaeeb/dondo/issues"
+    },
+    "dependencies": {
+        "preact": "^10.29.7"
+    },
+    "description": "Minimal local UI for switching Antigravity and Codex accounts.",
+    "devDependencies": {
+        "@biomejs/biome": "^2.5.3",
+        "@types/bun": "^1.3.14",
+        "typescript": "^7.0.2"
+    },
+    "engines": {
+        "bun": ">=1.3.14"
+    },
+    "files": [
+        "LICENSE",
+        "README.md",
+        "icon.png",
+        "icon.svg",
+        "src"
+    ],
+    "homepage": "https://github.com/ragaeeb/dondo",
+    "keywords": [
+        "antigravity",
+        "codex",
+        "account-switcher",
+        "bun",
+        "keychain"
+    ],
+    "license": "MIT",
+    "name": "dondo-donuts",
+    "os": [
+        "darwin"
+    ],
+    "packageManager": "bun@1.3.14",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ragaeeb/dondo.git"
+    },
+    "scripts": {
+        "format": "biome check . --write && biome lint . --write",
+        "lint": "biome lint .",
+        "start": "bun src/server.ts",
+        "typecheck": "tsc --noEmit"
+    },
+    "type": "module",
+    "version": "0.2.2"
 }
