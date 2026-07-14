@@ -50,6 +50,25 @@ const formatDate = (value: string) => (value ? new Date(value).toLocaleString() 
 const confirmSyncCurrent = (platform: string, key: string) =>
     confirm(`Replace "${key}" with the currently active ${platform} credentials? This overwrites the saved account.`);
 
+const downloadPlatformExport = async (platform: Tab) => {
+    const response = await fetch(`/api/${platform}/export`);
+    if (!response.ok) {
+        const json = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(json?.error ?? response.statusText);
+    }
+
+    const blobUrl = URL.createObjectURL(await response.blob());
+    const disposition = response.headers.get('content-disposition') ?? '';
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? `dondo-${platform}-wallet.json`;
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 0);
+};
+
 const ModelCard = ({ model }: { model: [string, ModelLimit] }) => {
     const [name, data] = model;
     const width = Math.max(0, Math.min(100, data.percentage));
@@ -227,9 +246,21 @@ const AntigravityPanel = ({ active }: { active: boolean }) => {
         <div hidden={!active}>
             <div class="toolbar">
                 <div class="muted small">{state ? `${state.service}/${state.account} · ${state.vaultPath}` : ''}</div>
-                <button type="button" onClick={() => refresh(true).catch((error) => setStatus(error.message))}>
-                    Refresh limits
-                </button>
+                <div class="toolbar-actions">
+                    <button
+                        type="button"
+                        onClick={() =>
+                            downloadPlatformExport('antigravity')
+                                .then(() => setStatus('Exported Antigravity wallet'))
+                                .catch((error) => setStatus(error.message))
+                        }
+                    >
+                        Export
+                    </button>
+                    <button type="button" onClick={() => refresh(true).catch((error) => setStatus(error.message))}>
+                        Refresh limits
+                    </button>
+                </div>
             </div>
             <section class="panel">
                 <form onSubmit={save}>
@@ -363,9 +394,21 @@ const CodexPanel = ({ active }: { active: boolean }) => {
         <div hidden={!active}>
             <div class="toolbar">
                 <div class="muted small">{state ? `${state.authPath} · ${state.vaultPath}` : ''}</div>
-                <button type="button" onClick={() => refresh(true).catch((error) => setStatus(error.message))}>
-                    Refresh limits
-                </button>
+                <div class="toolbar-actions">
+                    <button
+                        type="button"
+                        onClick={() =>
+                            downloadPlatformExport('codex')
+                                .then(() => setStatus('Exported Codex wallet'))
+                                .catch((error) => setStatus(error.message))
+                        }
+                    >
+                        Export
+                    </button>
+                    <button type="button" onClick={() => refresh(true).catch((error) => setStatus(error.message))}>
+                        Refresh limits
+                    </button>
+                </div>
             </div>
             <section class="panel">
                 <form onSubmit={save}>
@@ -494,9 +537,21 @@ const MinimaxPanel = ({ active }: { active: boolean }) => {
         <div hidden={!active}>
             <div class="toolbar">
                 <div class="muted small">{state ? `${state.configPath} · ${state.vaultPath}` : ''}</div>
-                <button type="button" onClick={() => refresh(true).catch((error) => setStatus(error.message))}>
-                    Refresh limits
-                </button>
+                <div class="toolbar-actions">
+                    <button
+                        type="button"
+                        onClick={() =>
+                            downloadPlatformExport('minimax')
+                                .then(() => setStatus('Exported MiniMax wallet'))
+                                .catch((error) => setStatus(error.message))
+                        }
+                    >
+                        Export
+                    </button>
+                    <button type="button" onClick={() => refresh(true).catch((error) => setStatus(error.message))}>
+                        Refresh limits
+                    </button>
+                </div>
             </div>
             <section class="panel">
                 <form onSubmit={save}>

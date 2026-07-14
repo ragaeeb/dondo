@@ -28,13 +28,13 @@ Install Bun 1.3 or newer, then run:
 bunx dondo-donuts
 ```
 
-Then open:
+Then open the URL printed by the server. By default Dondo starts at:
 
 ```text
 http://localhost:3000
 ```
 
-The server binds to `127.0.0.1` only.
+If that port is busy, Dondo uses the next available port. The server binds to `127.0.0.1` only.
 
 ## Development
 
@@ -127,7 +127,7 @@ CODEX_AUTH_PATH=~/.codex/auth.json
 MINIMAX_CONFIG_PATH=~/Library/Application Support/MiniMax Agent/minimax-agent-config.json
 ```
 
-`DONDO_PORT` takes precedence over `PORT`. `ANTIGRAVITY_KEYCHAIN` is passed as the keychain argument to macOS `security` commands, for example `login.keychain-db` or an absolute keychain path.
+`DONDO_PORT` takes precedence over `PORT`; both set the preferred starting port, and Dondo uses the next available port if that port is busy. `ANTIGRAVITY_KEYCHAIN` is passed as the keychain argument to macOS `security` commands, for example `login.keychain-db` or an absolute keychain path.
 
 Antigravity limit refreshes can use the saved Google refresh token to rotate an expired saved access token, then write the refreshed token blob back to the encrypted vault entry. Dondo discovers Antigravity's Google OAuth client from the local Antigravity language server binary. Codex limit refreshes only call the usage endpoint with the saved access token.
 

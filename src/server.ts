@@ -5,6 +5,7 @@ import { codexState, loadCodex, saveCodex } from './codex/service.ts';
 import { HOST, PORT } from './config.ts';
 import { errorMessage, errorStatus, publicError } from './errors.ts';
 import { loadMinimax, minimaxState, saveMinimax } from './minimax/service.ts';
+import { exportPlatformWallet, type ExportPlatform } from './storage/export.ts';
 import { renderHtml } from './ui/html.ts';
 
 type Assets = {
@@ -30,6 +31,8 @@ const API_RATE_LIMIT = {
     max: 120,
     windowMs: 10_000,
 };
+
+const MAX_PORT = 65_535;
 
 const buildAssets = async (): Promise<Assets> => {
     const result = await Bun.build({
@@ -75,6 +78,20 @@ const json = (value: unknown, status = 200) => {
 
 const jsonError = (error: unknown) => {
     return json({ error: errorMessage(error) }, errorStatus(error));
+};
+
+const isPortInUse = (error: unknown) => {
+    const value = error as { code?: unknown };
+    return value.code === 'EADDRINUSE' || String(error).includes('EADDRINUSE');
+};
+
+const exportJson = async (platform: ExportPlatform) => {
+    const filename = `dondo-${platform}-wallet-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    return withHeaders(new Response(`${JSON.stringify(await exportPlatformWallet(platform), null, 2)}\n`), {
+        'Cache-Control': 'no-store',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Type': 'application/json',
+    });
 };
 
 const localName = (host: string | null) => {
@@ -150,6 +167,7 @@ const requiredKey = async (req: Request) => {
 
 const routes = new Map<string, Route>([
     ['GET /api/antigravity/state', { handler: async () => json(await antigravityState()) }],
+    ['GET /api/antigravity/export', { handler: async () => exportJson('antigravity') }],
     [
         'POST /api/antigravity/limits/refresh',
         {
@@ -185,6 +203,7 @@ const routes = new Map<string, Route>([
         },
     ],
     ['GET /api/codex/state', { handler: async () => json(await codexState()) }],
+    ['GET /api/codex/export', { handler: async () => exportJson('codex') }],
     [
         'POST /api/codex/limits/refresh',
         {
@@ -211,6 +230,7 @@ const routes = new Map<string, Route>([
         },
     ],
     ['GET /api/minimax/state', { handler: async () => json(await minimaxState()) }],
+    ['GET /api/minimax/export', { handler: async () => exportJson('minimax') }],
     [
         'POST /api/minimax/limits/refresh',
         {
@@ -299,13 +319,31 @@ export const createFetch = (assets: Assets) => {
     };
 };
 
+export const serveOnAvailablePort = (assets: Assets, preferredPort = PORT) => {
+    let lastError: unknown;
+    for (let port = preferredPort; port <= MAX_PORT; port += 1) {
+        try {
+            return Bun.serve({
+                fetch: createFetch(assets),
+                hostname: HOST,
+                port,
+            });
+        } catch (error) {
+            if (!isPortInUse(error)) {
+                throw error;
+            }
+            lastError = error;
+        }
+    }
+
+    throw lastError instanceof Error
+        ? new Error(`No available port found at or above ${preferredPort}: ${lastError.message}`)
+        : new Error(`No available port found at or above ${preferredPort}`);
+};
+
 export const startServer = async () => {
     const assets = await buildAssets();
-    const server = Bun.serve({
-        fetch: createFetch(assets),
-        hostname: HOST,
-        port: PORT,
-    });
+    const server = serveOnAvailablePort(assets);
 
     console.log(`Dondo running at http://${HOST}:${server.port}`);
     return server;

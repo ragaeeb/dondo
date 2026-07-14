@@ -57,12 +57,14 @@ input {
 
 form,
 .actions,
+.toolbar-actions,
 .tabs {
     display: flex;
     gap: 10px;
 }
 
-.actions {
+.actions,
+.toolbar-actions {
     flex-wrap: wrap;
     justify-content: flex-end;
 }
