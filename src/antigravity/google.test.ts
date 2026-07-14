@@ -122,7 +122,8 @@ it('should refresh expired Antigravity access tokens and return an updated snaps
             return Response.json({ access_token: 'new-access', expires_in: 3600 });
         }
         if (target.includes('loadCodeAssist')) {
-            expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer new-access');
+            const headers = init?.headers as Record<string, string> | undefined;
+            expect(headers?.Authorization).toBe('Bearer new-access');
             return Response.json({
                 cloudaicompanionProject: 'project',
                 paidTier: { name: 'plus' },

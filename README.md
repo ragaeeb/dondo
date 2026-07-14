@@ -28,13 +28,13 @@ Install Bun 1.3 or newer, then run:
 bunx dondo-donuts
 ```
 
-Then open:
+Then open the URL printed by the server. By default Dondo starts at:
 
 ```text
-http://localhost:3000
+http://127.0.0.1:3000
 ```
 
-The server binds to `127.0.0.1` only.
+If that port is busy, Dondo uses the next available port. The server binds to `127.0.0.1` only.
 
 ## Development
 
@@ -62,6 +62,7 @@ Dondo stores its vault at the platform data directory:
 
 Set `DONDO_DATA_DIR` to override the directory, or `ANTIGRAVITY_VAULT` to override the full vault path.
 `DONDO_VAULT` also overrides the full vault path and takes precedence over the historical `ANTIGRAVITY_VAULT` name.
+When upgrading, rename `ANTIGRAVITY_VAULT` to `DONDO_VAULT` for clarity; the historical name remains supported.
 
 Vault shape:
 
@@ -127,24 +128,28 @@ CODEX_AUTH_PATH=~/.codex/auth.json
 MINIMAX_CONFIG_PATH=~/Library/Application Support/MiniMax Agent/minimax-agent-config.json
 ```
 
-`DONDO_PORT` takes precedence over `PORT`. `ANTIGRAVITY_KEYCHAIN` is passed as the keychain argument to macOS `security` commands, for example `login.keychain-db` or an absolute keychain path.
+`DONDO_PORT` takes precedence over `PORT`; both set the preferred starting port, and Dondo uses the next available port if that port is busy. `ANTIGRAVITY_KEYCHAIN` is passed as the keychain argument to macOS `security` commands, for example `login.keychain-db` or an absolute keychain path.
 
 Antigravity limit refreshes can use the saved Google refresh token to rotate an expired saved access token, then write the refreshed token blob back to the encrypted vault entry. Dondo discovers Antigravity's Google OAuth client from the local Antigravity language server binary. Codex limit refreshes only call the usage endpoint with the saved access token.
 
 ## Local API
 
-All API requests must be sent to localhost. Mutating routes require `POST` with a JSON object body.
+All API requests must be sent to localhost. Mutating routes require `POST` with a JSON object body. Export routes
+require `POST` and the `X-Dondo-Export: 1` header.
 
 - `GET /api/antigravity/state`
+- `POST /api/antigravity/export`
 - `POST /api/antigravity/limits/refresh` with optional `{ "key": "label" }`
 - `POST /api/antigravity/save` with `{ "key": "label" }`
 - `POST /api/antigravity/load` with `{ "key": "label" }`
 - `POST /api/antigravity/clear`
 - `GET /api/codex/state`
+- `POST /api/codex/export`
 - `POST /api/codex/limits/refresh` with optional `{ "key": "label" }`
 - `POST /api/codex/save` with `{ "key": "label" }`
 - `POST /api/codex/load` with `{ "key": "label" }`
 - `GET /api/minimax/state`
+- `POST /api/minimax/export`
 - `POST /api/minimax/limits/refresh` with optional `{ "key": "label" }`
 - `POST /api/minimax/save` with `{ "key": "label" }`
 - `POST /api/minimax/load` with `{ "key": "label" }`
@@ -162,10 +167,16 @@ All API requests must be sent to localhost. Mutating routes require `POST` with 
 Dondo is designed to be easy to inspect:
 
 - The server listens on `127.0.0.1`.
-- Tokens are not returned to the browser API.
+- State and limit APIs do not return token payloads.
 - Saved token payloads are encrypted at rest.
 - Rate-limit API calls happen server-side.
-- Codex `auth.json` contents are never rendered or returned by the API.
+- Token payloads and Codex `auth.json` contents are never rendered in the UI.
+
+The three export routes are the sole API exception: they return every saved account for the selected platform as an
+unencrypted JSON attachment. The UI asks for explicit confirmation before calling them. Export requires a local
+`POST` request with a dedicated confirmation header, is rate limited with the rest of the local API, and uses
+`Cache-Control: no-store`. The downloaded file contains live credentials and must be stored and shared as carefully
+as the original auth files.
 
 This protects against casual plaintext scraping of the vault file. A process running as the same logged-in user may still be able to access local Keychain items depending on operating-system policy. Antigravity restore currently passes the token blob to the macOS `security` CLI as an argument, which can be visible briefly to same-user process listings.
 

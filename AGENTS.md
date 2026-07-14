@@ -24,7 +24,9 @@ Do not reintroduce root launcher shims or barrel `index.ts` files. Import concre
 - Use arrow functions only. Do not add `function` declarations.
 - Keep imports explicit and type-only where appropriate.
 - Keep token-handling code simple and auditable.
-- Do not log, return, or render token payloads.
+- Do not log or render token payloads.
+- Only the dedicated `POST /api/{platform}/export` attachment routes may return token payloads. All other API routes
+  must keep token payloads out of responses, and export responses must remain local-only and non-cacheable.
 - Keep UI components in Preact/TSX, not raw HTML template strings. The static document shell in `src/ui/html.ts` is the only allowed non-component HTML string.
 - Keep CSS in `src/ui/styles.css`.
 - Avoid new dependencies unless they remove substantial complexity. Node/Bun standard APIs are preferred.
