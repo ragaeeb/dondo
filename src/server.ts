@@ -16,8 +16,22 @@ type Assets = {
 };
 
 type Route = {
-    handler: (req: Request) => Promise<Response>;
+    handler: (req: Request, dependencies: ServerDependencies) => Promise<Response>;
 };
+
+type ExportWallet = (platform: ExportPlatform) => Promise<unknown>;
+
+type ServerDependencies = {
+    exportWallet: ExportWallet;
+};
+
+type ServerFactoryOptions = {
+    fetch: ReturnType<typeof createFetch>;
+    hostname: string;
+    port: number;
+};
+
+type ServerFactory = (options: ServerFactoryOptions) => ReturnType<typeof Bun.serve>;
 
 const SECURITY_HEADERS = {
     'Content-Security-Policy':
@@ -33,6 +47,14 @@ const API_RATE_LIMIT = {
 };
 
 const MAX_PORT = 65_535;
+const MAX_PORT_ATTEMPTS = 20;
+const EXPORT_CONFIRMATION_HEADER = 'X-Dondo-Export';
+
+const defaultDependencies: ServerDependencies = {
+    exportWallet: exportPlatformWallet,
+};
+
+const bunServerFactory: ServerFactory = (options) => Bun.serve(options);
 
 const buildAssets = async (): Promise<Assets> => {
     const result = await Bun.build({
@@ -81,13 +103,13 @@ const jsonError = (error: unknown) => {
 };
 
 const isPortInUse = (error: unknown) => {
-    const value = error as { code?: unknown };
-    return value.code === 'EADDRINUSE' || String(error).includes('EADDRINUSE');
+    const value = typeof error === 'object' && error !== null ? (error as { code?: unknown }) : undefined;
+    return value?.code === 'EADDRINUSE';
 };
 
-const exportJson = async (platform: ExportPlatform) => {
+const exportJson = async (platform: ExportPlatform, exportWallet: ExportWallet) => {
     const filename = `dondo-${platform}-wallet-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-    return withHeaders(new Response(`${JSON.stringify(await exportPlatformWallet(platform), null, 2)}\n`), {
+    return withHeaders(new Response(JSON.stringify(await exportWallet(platform), null, 2)), {
         'Cache-Control': 'no-store',
         'Content-Disposition': `attachment; filename="${filename}"`,
         'Content-Type': 'application/json',
@@ -97,7 +119,7 @@ const exportJson = async (platform: ExportPlatform) => {
 const localName = (host: string | null) => {
     const lower = host?.toLowerCase();
     const value = lower?.startsWith('[') ? lower.slice(0, lower.indexOf(']') + 1) : lower?.split(':')[0];
-    return value === 'localhost' || value === '127.0.0.1' || value === '[::1]' || value === '::1';
+    return value === 'localhost' || value === '127.0.0.1';
 };
 
 const assertLocalRequest = (req: Request) => {
@@ -125,6 +147,12 @@ const assertRateLimit = () => {
         throw publicError(429, 'Too many local API requests; wait a moment and try again');
     }
     API_RATE_LIMIT.hits.push(now);
+};
+
+const assertExportConfirmation = (req: Request) => {
+    if (req.headers.get(EXPORT_CONFIRMATION_HEADER) !== '1') {
+        throw publicError(403, 'Export confirmation is required');
+    }
 };
 
 const body = async (req: Request) => {
@@ -167,7 +195,15 @@ const requiredKey = async (req: Request) => {
 
 const routes = new Map<string, Route>([
     ['GET /api/antigravity/state', { handler: async () => json(await antigravityState()) }],
-    ['GET /api/antigravity/export', { handler: async () => exportJson('antigravity') }],
+    [
+        'POST /api/antigravity/export',
+        {
+            handler: async (req, dependencies) => {
+                assertExportConfirmation(req);
+                return exportJson('antigravity', dependencies.exportWallet);
+            },
+        },
+    ],
     [
         'POST /api/antigravity/limits/refresh',
         {
@@ -203,7 +239,15 @@ const routes = new Map<string, Route>([
         },
     ],
     ['GET /api/codex/state', { handler: async () => json(await codexState()) }],
-    ['GET /api/codex/export', { handler: async () => exportJson('codex') }],
+    [
+        'POST /api/codex/export',
+        {
+            handler: async (req, dependencies) => {
+                assertExportConfirmation(req);
+                return exportJson('codex', dependencies.exportWallet);
+            },
+        },
+    ],
     [
         'POST /api/codex/limits/refresh',
         {
@@ -230,7 +274,15 @@ const routes = new Map<string, Route>([
         },
     ],
     ['GET /api/minimax/state', { handler: async () => json(await minimaxState()) }],
-    ['GET /api/minimax/export', { handler: async () => exportJson('minimax') }],
+    [
+        'POST /api/minimax/export',
+        {
+            handler: async (req, dependencies) => {
+                assertExportConfirmation(req);
+                return exportJson('minimax', dependencies.exportWallet);
+            },
+        },
+    ],
     [
         'POST /api/minimax/limits/refresh',
         {
@@ -258,7 +310,7 @@ const routes = new Map<string, Route>([
     ],
 ]);
 
-const handleApi = async (url: URL, req: Request) => {
+const handleApi = async (url: URL, req: Request, dependencies: ServerDependencies) => {
     if (!url.pathname.startsWith('/api/')) {
         return null;
     }
@@ -269,7 +321,7 @@ const handleApi = async (url: URL, req: Request) => {
         const hasPath = [...routes.keys()].some((key) => key.endsWith(` ${url.pathname}`));
         return hasPath ? json({ error: 'Method not allowed' }, 405) : json({ error: 'Not found' }, 404);
     }
-    return route.handler(req);
+    return route.handler(req, dependencies);
 };
 
 const handleAsset = (url: URL, assets: Assets) => {
@@ -300,7 +352,10 @@ const handleAsset = (url: URL, assets: Assets) => {
     return null;
 };
 
-export const createFetch = (assets: Assets) => {
+export const createFetch = (assets: Assets, dependencyOverrides: Partial<ServerDependencies> = {}) => {
+    const dependencies: ServerDependencies = {
+        exportWallet: dependencyOverrides.exportWallet ?? defaultDependencies.exportWallet,
+    };
     return async (req: Request) => {
         const url = new URL(req.url);
         try {
@@ -308,7 +363,7 @@ export const createFetch = (assets: Assets) => {
             if (asset) {
                 return asset;
             }
-            const api = await handleApi(url, req);
+            const api = await handleApi(url, req, dependencies);
             if (api) {
                 return api;
             }
@@ -319,11 +374,20 @@ export const createFetch = (assets: Assets) => {
     };
 };
 
-export const serveOnAvailablePort = (assets: Assets, preferredPort = PORT) => {
+export const serveOnAvailablePort = (
+    assets: Assets,
+    preferredPort = PORT,
+    serverFactory: ServerFactory = bunServerFactory,
+) => {
+    if (!Number.isInteger(preferredPort) || preferredPort < 1 || preferredPort > MAX_PORT) {
+        throw new Error(`Invalid preferred port: ${preferredPort}`);
+    }
+
+    const lastPort = Math.min(MAX_PORT, preferredPort + MAX_PORT_ATTEMPTS - 1);
     let lastError: unknown;
-    for (let port = preferredPort; port <= MAX_PORT; port += 1) {
+    for (let port = preferredPort; port <= lastPort; port += 1) {
         try {
-            return Bun.serve({
+            return serverFactory({
                 fetch: createFetch(assets),
                 hostname: HOST,
                 port,
@@ -336,9 +400,10 @@ export const serveOnAvailablePort = (assets: Assets, preferredPort = PORT) => {
         }
     }
 
-    throw lastError instanceof Error
-        ? new Error(`No available port found at or above ${preferredPort}: ${lastError.message}`)
-        : new Error(`No available port found at or above ${preferredPort}`);
+    const attempts = lastPort - preferredPort + 1;
+    const attemptLabel = attempts === 1 ? 'attempt' : 'attempts';
+    const message = `No available port found after ${attempts} ${attemptLabel} from ${preferredPort} to ${lastPort}`;
+    throw lastError instanceof Error ? new Error(`${message}: ${lastError.message}`) : new Error(message);
 };
 
 export const startServer = async () => {

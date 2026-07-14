@@ -53,7 +53,8 @@ it('should not refresh Codex OAuth tokens while fetching usage', async () => {
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
         const target = String(url);
         calls.push(target);
-        expect((init?.headers as Record<string, string>).Authorization).toContain('Bearer ');
+        const headers = init?.headers as Record<string, string> | undefined;
+        expect(headers?.Authorization).toContain('Bearer ');
         return Response.json({
             plan_type: 'plus',
             rate_limit: {

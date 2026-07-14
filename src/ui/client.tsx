@@ -32,6 +32,8 @@ type MinimaxState = {
 
 type Tab = 'antigravity' | 'codex' | 'minimax';
 
+const BLOB_URL_REVOKE_DELAY_MS = 10_000;
+
 const api = async <T,>(path: string, body?: unknown): Promise<T> => {
     const response = await fetch(path, {
         body: body ? JSON.stringify(body) : undefined,
@@ -51,22 +53,61 @@ const confirmSyncCurrent = (platform: string, key: string) =>
     confirm(`Replace "${key}" with the currently active ${platform} credentials? This overwrites the saved account.`);
 
 const downloadPlatformExport = async (platform: Tab) => {
-    const response = await fetch(`/api/${platform}/export`);
+    const response = await fetch(`/api/${platform}/export`, {
+        headers: { 'X-Dondo-Export': '1' },
+        method: 'POST',
+    });
     if (!response.ok) {
         const json = (await response.json().catch(() => null)) as { error?: string } | null;
         throw new Error(json?.error ?? response.statusText);
     }
 
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.toLowerCase().startsWith('application/json')) {
+        throw new Error('Export response was not JSON');
+    }
+
     const blobUrl = URL.createObjectURL(await response.blob());
     const disposition = response.headers.get('content-disposition') ?? '';
-    const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? `dondo-${platform}-wallet.json`;
+    const candidate = disposition.match(/filename="([^"]+)"/)?.[1];
+    const filename =
+        candidate && /^[A-Za-z0-9][A-Za-z0-9._-]*\.json$/.test(candidate) ? candidate : `dondo-${platform}-wallet.json`;
     const link = document.createElement('a');
     link.href = blobUrl;
     link.download = filename;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 0);
+    try {
+        document.body.append(link);
+        link.click();
+    } finally {
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), BLOB_URL_REVOKE_DELAY_MS);
+    }
+};
+
+const runPlatformExport = async (
+    platform: Tab,
+    displayName: string,
+    setStatus: (value: string) => void,
+    setExporting: (value: boolean) => void,
+) => {
+    if (
+        !confirm(
+            `This downloads an unencrypted JSON file containing all saved ${displayName} credentials. Keep it private. Continue?`,
+        )
+    ) {
+        return;
+    }
+
+    setExporting(true);
+    setStatus(`Exporting ${displayName} wallet...`);
+    try {
+        await downloadPlatformExport(platform);
+        setStatus(`Exported ${displayName} wallet`);
+    } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+        setExporting(false);
+    }
 };
 
 const ModelCard = ({ model }: { model: [string, ModelLimit] }) => {
@@ -145,6 +186,7 @@ const AntigravityPanel = ({ active }: { active: boolean }) => {
     const [key, setKey] = useState('');
     const [loaded, setLoaded] = useState(false);
     const [pendingKey, setPendingKey] = useState('');
+    const [exporting, setExporting] = useState(false);
 
     const refresh = async (forceLimits = false) => {
         setStatus(forceLimits ? 'Refreshing limits...' : 'Loading accounts...');
@@ -249,11 +291,9 @@ const AntigravityPanel = ({ active }: { active: boolean }) => {
                 <div class="toolbar-actions">
                     <button
                         type="button"
-                        onClick={() =>
-                            downloadPlatformExport('antigravity')
-                                .then(() => setStatus('Exported Antigravity wallet'))
-                                .catch((error) => setStatus(error.message))
-                        }
+                        aria-busy={exporting}
+                        disabled={exporting || !state?.entries.length}
+                        onClick={() => runPlatformExport('antigravity', 'Antigravity', setStatus, setExporting)}
                     >
                         Export
                     </button>
@@ -307,6 +347,7 @@ const CodexPanel = ({ active }: { active: boolean }) => {
     const [key, setKey] = useState('');
     const [loaded, setLoaded] = useState(false);
     const [pendingKey, setPendingKey] = useState('');
+    const [exporting, setExporting] = useState(false);
 
     const refresh = async (forceLimits = false) => {
         setStatus(forceLimits ? 'Refreshing limits...' : 'Loading accounts...');
@@ -397,11 +438,9 @@ const CodexPanel = ({ active }: { active: boolean }) => {
                 <div class="toolbar-actions">
                     <button
                         type="button"
-                        onClick={() =>
-                            downloadPlatformExport('codex')
-                                .then(() => setStatus('Exported Codex wallet'))
-                                .catch((error) => setStatus(error.message))
-                        }
+                        aria-busy={exporting}
+                        disabled={exporting || !state?.entries.length}
+                        onClick={() => runPlatformExport('codex', 'Codex', setStatus, setExporting)}
                     >
                         Export
                     </button>
@@ -450,6 +489,7 @@ const MinimaxPanel = ({ active }: { active: boolean }) => {
     const [key, setKey] = useState('');
     const [loaded, setLoaded] = useState(false);
     const [pendingKey, setPendingKey] = useState('');
+    const [exporting, setExporting] = useState(false);
 
     const refresh = async (forceLimits = false) => {
         setStatus(forceLimits ? 'Refreshing limits...' : 'Loading accounts...');
@@ -540,11 +580,9 @@ const MinimaxPanel = ({ active }: { active: boolean }) => {
                 <div class="toolbar-actions">
                     <button
                         type="button"
-                        onClick={() =>
-                            downloadPlatformExport('minimax')
-                                .then(() => setStatus('Exported MiniMax wallet'))
-                                .catch((error) => setStatus(error.message))
-                        }
+                        aria-busy={exporting}
+                        disabled={exporting || !state?.entries.length}
+                        onClick={() => runPlatformExport('minimax', 'MiniMax', setStatus, setExporting)}
                     >
                         Export
                     </button>
