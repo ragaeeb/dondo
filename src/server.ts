@@ -1,10 +1,17 @@
 #!/usr/bin/env bun
 
-import { antigravityState, clearAntigravity, loadAntigravity, saveAntigravity } from './antigravity/service.ts';
-import { codexState, loadCodex, saveCodex } from './codex/service.ts';
+import {
+    antigravityState,
+    clearAntigravity,
+    deleteAntigravity,
+    loadAntigravity,
+    saveAntigravity,
+} from './antigravity/service.ts';
+import { codexState, deleteCodex, loadCodex, saveCodex } from './codex/service.ts';
 import { HOST, PORT } from './config.ts';
 import { errorMessage, errorStatus, publicError } from './errors.ts';
-import { loadMinimax, minimaxState, saveMinimax } from './minimax/service.ts';
+import { clearKiro, deleteKiro, kiroState, loadKiro, saveKiro } from './kiro/service.ts';
+import { deleteMinimax, loadMinimax, minimaxState, saveMinimax } from './minimax/service.ts';
 import { type ExportPlatform, exportPlatformWallet } from './storage/export.ts';
 import { renderHtml } from './ui/html.ts';
 
@@ -230,6 +237,15 @@ const routes = new Map<string, Route>([
         },
     ],
     [
+        'POST /api/antigravity/delete',
+        {
+            handler: async (req) => {
+                await deleteAntigravity(await requiredKey(req));
+                return json({ ok: true });
+            },
+        },
+    ],
+    [
         'POST /api/antigravity/clear',
         {
             handler: async () => {
@@ -273,6 +289,61 @@ const routes = new Map<string, Route>([
             },
         },
     ],
+    [
+        'POST /api/codex/delete',
+        {
+            handler: async (req) => {
+                await deleteCodex(await requiredKey(req));
+                return json({ ok: true });
+            },
+        },
+    ],
+    ['GET /api/kiro/state', { handler: async () => json(await kiroState()) }],
+    [
+        'POST /api/kiro/export',
+        {
+            handler: async (req, dependencies) => {
+                assertExportConfirmation(req);
+                return exportJson('kiro', dependencies.exportWallet);
+            },
+        },
+    ],
+    [
+        'POST /api/kiro/save',
+        {
+            handler: async (req) => {
+                await saveKiro(await requiredKey(req));
+                return json({ ok: true });
+            },
+        },
+    ],
+    [
+        'POST /api/kiro/load',
+        {
+            handler: async (req) => {
+                await loadKiro(await requiredKey(req));
+                return json({ ok: true });
+            },
+        },
+    ],
+    [
+        'POST /api/kiro/delete',
+        {
+            handler: async (req) => {
+                await deleteKiro(await requiredKey(req));
+                return json({ ok: true });
+            },
+        },
+    ],
+    [
+        'POST /api/kiro/clear',
+        {
+            handler: async () => {
+                await clearKiro();
+                return json({ ok: true });
+            },
+        },
+    ],
     ['GET /api/minimax/state', { handler: async () => json(await minimaxState()) }],
     [
         'POST /api/minimax/export',
@@ -308,6 +379,15 @@ const routes = new Map<string, Route>([
             },
         },
     ],
+    [
+        'POST /api/minimax/delete',
+        {
+            handler: async (req) => {
+                await deleteMinimax(await requiredKey(req));
+                return json({ ok: true });
+            },
+        },
+    ],
 ]);
 
 const handleApi = async (url: URL, req: Request, dependencies: ServerDependencies) => {
@@ -325,7 +405,7 @@ const handleApi = async (url: URL, req: Request, dependencies: ServerDependencie
 };
 
 const handleAsset = (url: URL, assets: Assets) => {
-    if (url.pathname === '/') {
+    if (['/', '/antigravity', '/codex', '/kiro', '/minimax'].includes(url.pathname)) {
         return withHeaders(new Response(renderHtml()), { 'Cache-Control': 'no-store', 'Content-Type': 'text/html' });
     }
     if (url.pathname === '/assets/app.js') {

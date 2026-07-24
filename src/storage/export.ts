@@ -2,11 +2,12 @@ import { decodeToken } from '../antigravity/google.ts';
 import { publicError } from '../errors.ts';
 import { readVaultSection } from './vault.ts';
 
-export type ExportPlatform = 'antigravity' | 'codex' | 'minimax';
+export type ExportPlatform = 'antigravity' | 'codex' | 'kiro' | 'minimax';
 
 const platformNames: Record<ExportPlatform, string> = {
     antigravity: 'Antigravity',
     codex: 'Codex',
+    kiro: 'Kiro',
     minimax: 'MiniMax',
 };
 
@@ -84,6 +85,26 @@ export const exportPlatformWallet = async (platform: ExportPlatform, path?: stri
                 config: parseJsonConfig(snap.config, platform, accountKey),
                 createdAt: snap.createdAt,
                 key: accountKey,
+                updatedAt: snap.updatedAt,
+            })),
+            exportedAt,
+            platform,
+        };
+    }
+
+    if (platform === 'kiro') {
+        const section = await readVaultSection('kiro', path, key);
+        const entries = Object.entries(section.data);
+        assertAccounts(platform, entries.length);
+        return {
+            accounts: entries.map(([accountKey, snap]) => ({
+                clientRegistration: snap.clientRegistration
+                    ? parseJsonConfig(snap.clientRegistration, platform, accountKey)
+                    : undefined,
+                config: parseJsonConfig(snap.auth, platform, accountKey),
+                createdAt: snap.createdAt,
+                key: accountKey,
+                profile: snap.profile ? parseJsonConfig(snap.profile, platform, accountKey) : undefined,
                 updatedAt: snap.updatedAt,
             })),
             exportedAt,
