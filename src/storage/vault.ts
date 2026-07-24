@@ -4,6 +4,8 @@ import type {
     AppVault,
     CodexSnapshot,
     CodexVault,
+    KiroSnapshot,
+    KiroVault,
     MinimaxSnapshot,
     MinimaxVault,
     PlatformVault,
@@ -23,6 +25,7 @@ const emptySection = <T>(): VaultSection<T> => ({ data: {}, limits: {} });
 const emptyVault = (): AppVault => ({
     antigravity: emptySection<Snapshot>(),
     codex: emptySection<CodexSnapshot>(),
+    kiro: emptySection<KiroSnapshot>(),
     minimax: emptySection<MinimaxSnapshot>(),
 });
 
@@ -45,6 +48,7 @@ const normalizeVault = (raw: unknown): AppVault => {
     const input = isRecord(raw) ? raw : {};
     const antigravity = isRecord(input.antigravity) ? input.antigravity : {};
     const codex = isRecord(input.codex) ? input.codex : {};
+    const kiro = isRecord(input.kiro) ? input.kiro : {};
     const minimax = isRecord(input.minimax) ? input.minimax : {};
 
     return {
@@ -55,6 +59,10 @@ const normalizeVault = (raw: unknown): AppVault => {
         codex: {
             data: isRecord(codex.data) ? (codex.data as Record<string, CodexSnapshot>) : {},
             limits: isRecord(codex.limits) ? (codex.limits as CodexVault['limits']) : {},
+        },
+        kiro: {
+            data: isRecord(kiro.data) ? (kiro.data as Record<string, KiroSnapshot>) : {},
+            limits: isRecord(kiro.limits) ? (kiro.limits as KiroVault['limits']) : {},
         },
         minimax: {
             data: isRecord(minimax.data) ? (minimax.data as Record<string, MinimaxSnapshot>) : {},
@@ -111,6 +119,44 @@ const encryptCodex = async (codex: CodexVault, encryptionKey?: Buffer): Promise<
     limits: codex.limits ?? {},
 });
 
+const decryptKiro = async (kiro: KiroVault, encryptionKey?: Buffer): Promise<KiroVault> => ({
+    data: Object.fromEntries(
+        await Promise.all(
+            Object.entries(kiro.data ?? {}).map(async ([key, snap]) => [
+                key,
+                {
+                    ...snap,
+                    auth: await open(snap.auth, encryptionKey),
+                    clientRegistration: snap.clientRegistration
+                        ? await open(snap.clientRegistration, encryptionKey)
+                        : undefined,
+                    profile: snap.profile ? await open(snap.profile, encryptionKey) : undefined,
+                },
+            ]),
+        ),
+    ),
+    limits: kiro.limits ?? {},
+});
+
+const encryptKiro = async (kiro: KiroVault, encryptionKey?: Buffer): Promise<KiroVault> => ({
+    data: Object.fromEntries(
+        await Promise.all(
+            Object.entries(kiro.data ?? {}).map(async ([key, snap]) => [
+                key,
+                {
+                    ...snap,
+                    auth: await seal(snap.auth, encryptionKey),
+                    clientRegistration: snap.clientRegistration
+                        ? await seal(snap.clientRegistration, encryptionKey)
+                        : undefined,
+                    profile: snap.profile ? await seal(snap.profile, encryptionKey) : undefined,
+                },
+            ]),
+        ),
+    ),
+    limits: kiro.limits ?? {},
+});
+
 const decryptMinimax = async (minimax: MinimaxVault, encryptionKey?: Buffer): Promise<MinimaxVault> => ({
     data: Object.fromEntries(
         await Promise.all(
@@ -156,6 +202,7 @@ const readVaultFile = async (path: string, key?: Buffer): Promise<AppVault> => {
     return {
         antigravity: await decryptPlatform(vault.antigravity, key),
         codex: await decryptCodex(vault.codex, key),
+        kiro: await decryptKiro(vault.kiro, key),
         minimax: await decryptMinimax(vault.minimax, key),
     };
 };
@@ -167,6 +214,7 @@ export const writeVault = async (vault: AppVault, path = VAULT_PATH, key?: Buffe
             {
                 antigravity: await encryptPlatform(vault.antigravity, key),
                 codex: await encryptCodex(vault.codex, key),
+                kiro: await encryptKiro(vault.kiro, key),
                 minimax: await encryptMinimax(vault.minimax, key),
             },
             null,
@@ -191,6 +239,9 @@ export const readVaultSection = async <Platform extends keyof AppVault>(
         }
         if (platform === 'codex') {
             return (await decryptCodex(vault.codex, key)) as AppVault[Platform];
+        }
+        if (platform === 'kiro') {
+            return (await decryptKiro(vault.kiro, key)) as AppVault[Platform];
         }
         if (platform === 'minimax') {
             return (await decryptMinimax(vault.minimax, key)) as AppVault[Platform];

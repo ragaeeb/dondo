@@ -56,8 +56,19 @@ export type MinimaxSnapshot = {
 
 export type MinimaxVault = VaultSection<MinimaxSnapshot>;
 
+export type KiroSnapshot = {
+    auth: string;
+    clientRegistration?: string;
+    createdAt: string;
+    profile?: string;
+    updatedAt: string;
+};
+
+export type KiroVault = VaultSection<KiroSnapshot>;
+
 export type AppVault = {
     antigravity: PlatformVault;
     codex: CodexVault;
+    kiro: KiroVault;
     minimax: MinimaxVault;
 };

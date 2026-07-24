@@ -2,6 +2,7 @@ import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import packageJson from '../../package.json';
 import type { LimitResult, ModelLimit } from '../types.ts';
+import { type PlatformTab, pathForTab, tabFromPath } from './routes.ts';
 
 type AccountEntry = {
     active: boolean;
@@ -24,13 +25,17 @@ type CodexState = {
     vaultPath: string;
 };
 
+type KiroState = {
+    authPath: string;
+    entries: AccountEntry[];
+    vaultPath: string;
+};
+
 type MinimaxState = {
     configPath: string;
     entries: AccountEntry[];
     vaultPath: string;
 };
-
-type Tab = 'antigravity' | 'codex' | 'minimax';
 
 const BLOB_URL_REVOKE_DELAY_MS = 10_000;
 
@@ -52,7 +57,31 @@ const formatDate = (value: string) => (value ? new Date(value).toLocaleString() 
 const confirmSyncCurrent = (platform: string, key: string) =>
     confirm(`Replace "${key}" with the currently active ${platform} credentials? This overwrites the saved account.`);
 
-const downloadPlatformExport = async (platform: Tab) => {
+const deleteSavedAccount = async (
+    platform: PlatformTab,
+    displayName: string,
+    key: string,
+    refresh: () => Promise<void>,
+    setStatus: (value: string) => void,
+    setPendingKey: (value: string) => void,
+) => {
+    if (!confirm(`Delete the saved ${displayName} account "${key}"? This does not sign out the live account.`)) {
+        return;
+    }
+    setStatus(`Deleting ${key}...`);
+    setPendingKey(key);
+    try {
+        await api(`/api/${platform}/delete`, { key });
+        await refresh();
+        setStatus(`Deleted ${key}`);
+    } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+        setPendingKey('');
+    }
+};
+
+const downloadPlatformExport = async (platform: PlatformTab) => {
     const response = await fetch(`/api/${platform}/export`, {
         headers: { 'X-Dondo-Export': '1' },
         method: 'POST',
@@ -85,7 +114,7 @@ const downloadPlatformExport = async (platform: Tab) => {
 };
 
 const runPlatformExport = async (
-    platform: Tab,
+    platform: PlatformTab,
     displayName: string,
     setStatus: (value: string) => void,
     setExporting: (value: boolean) => void,
@@ -134,14 +163,18 @@ const AccountRow = ({
     entry,
     pending,
     onLoad,
+    onDelete,
     onRefresh,
     onSync,
+    showLimits = true,
 }: {
     entry: AccountEntry;
     pending: boolean;
+    onDelete: (key: string) => void;
     onLoad: (key: string) => void;
-    onRefresh: (key: string) => void;
-    onSync: (key: string) => void;
+    onRefresh?: (key: string) => void;
+    onSync?: (key: string) => void;
+    showLimits?: boolean;
 }) => (
     <article class="row">
         <div class="row-head">
@@ -157,26 +190,35 @@ const AccountRow = ({
                 </div>
             </div>
             <div class="actions">
-                <button type="button" disabled={pending} onClick={() => onRefresh(entry.key)}>
-                    Refresh
+                <button class="danger" type="button" disabled={pending} onClick={() => onDelete(entry.key)}>
+                    Delete
                 </button>
-                <button type="button" disabled={pending} onClick={() => onSync(entry.key)}>
-                    Sync current
-                </button>
+                {onRefresh ? (
+                    <button type="button" disabled={pending} onClick={() => onRefresh(entry.key)}>
+                        Refresh
+                    </button>
+                ) : null}
+                {onSync ? (
+                    <button type="button" disabled={pending} onClick={() => onSync(entry.key)}>
+                        Sync current
+                    </button>
+                ) : null}
                 <button type="button" disabled={pending} onClick={() => onLoad(entry.key)}>
                     Load
                 </button>
             </div>
         </div>
-        {entry.quota?.ok ? (
-            <div class="quota">
-                {Object.entries(entry.quota.models).map((model) => (
-                    <ModelCard key={model[0]} model={model} />
-                ))}
-            </div>
-        ) : (
-            <div class="err small">{entry.quota?.error ?? 'No cached limit data'}</div>
-        )}
+        {showLimits ? (
+            entry.quota?.ok ? (
+                <div class="quota">
+                    {Object.entries(entry.quota.models).map((model) => (
+                        <ModelCard key={model[0]} model={model} />
+                    ))}
+                </div>
+            ) : (
+                <div class="err small">{entry.quota?.error ?? 'No cached limit data'}</div>
+            )
+        ) : null}
     </article>
 );
 
@@ -328,6 +370,16 @@ const AntigravityPanel = ({ active }: { active: boolean }) => {
                             key={entry.key}
                             entry={entry}
                             pending={pendingKey === entry.key}
+                            onDelete={(entryKey) =>
+                                deleteSavedAccount(
+                                    'antigravity',
+                                    'Antigravity',
+                                    entryKey,
+                                    () => refresh(false),
+                                    setStatus,
+                                    setPendingKey,
+                                )
+                            }
                             onLoad={load}
                             onRefresh={refreshOne}
                             onSync={syncCurrent}
@@ -470,9 +522,155 @@ const CodexPanel = ({ active }: { active: boolean }) => {
                             key={entry.key}
                             entry={entry}
                             pending={pendingKey === entry.key}
+                            onDelete={(entryKey) =>
+                                deleteSavedAccount(
+                                    'codex',
+                                    'Codex',
+                                    entryKey,
+                                    () => refresh(false),
+                                    setStatus,
+                                    setPendingKey,
+                                )
+                            }
                             onLoad={load}
                             onRefresh={refreshOne}
                             onSync={syncCurrent}
+                        />
+                    ))
+                ) : (
+                    <div class="muted">No saved accounts yet.</div>
+                )}
+            </section>
+        </div>
+    );
+};
+
+const KiroPanel = ({ active }: { active: boolean }) => {
+    const [state, setState] = useState<KiroState | null>(null);
+    const [status, setStatus] = useState('');
+    const [key, setKey] = useState('');
+    const [loaded, setLoaded] = useState(false);
+    const [pendingKey, setPendingKey] = useState('');
+    const [exporting, setExporting] = useState(false);
+
+    const refresh = async () => {
+        setStatus('Loading accounts...');
+        setState(await api<KiroState>('/api/kiro/state'));
+        setLoaded(true);
+        setStatus('');
+    };
+
+    const saveCurrent = async () => {
+        const trimmed = key.trim();
+        if (!trimmed) {
+            return;
+        }
+        setStatus('Saving...');
+        try {
+            await api('/api/kiro/save', { key: trimmed });
+            setKey('');
+            await refresh();
+            setStatus(`Saved ${trimmed}`);
+        } catch (error) {
+            setStatus(error instanceof Error ? error.message : String(error));
+        }
+    };
+
+    const save = async (event: Event) => {
+        event.preventDefault();
+        await saveCurrent();
+    };
+
+    const load = async (entryKey: string) => {
+        setStatus(`Loading ${entryKey}...`);
+        setPendingKey(entryKey);
+        try {
+            await api('/api/kiro/load', { key: entryKey });
+            await refresh();
+            setStatus(`Loaded ${entryKey}. Reopen Kiro to use it.`);
+        } catch (error) {
+            setStatus(error instanceof Error ? error.message : String(error));
+        } finally {
+            setPendingKey('');
+        }
+    };
+
+    const clear = async () => {
+        if (
+            !confirm(
+                'Is Kiro fully quit, and did you save the current account? Dondo will remove its local login files without remotely signing out.',
+            )
+        ) {
+            return;
+        }
+        setStatus('Clearing...');
+        try {
+            await api('/api/kiro/clear', {});
+            await refresh();
+            setStatus('Cleared live Kiro auth. Reopen Kiro to sign in.');
+        } catch (error) {
+            setStatus(error instanceof Error ? error.message : String(error));
+        }
+    };
+
+    useEffect(() => {
+        if (!active || loaded) {
+            return;
+        }
+        refresh().catch((error) => {
+            setStatus(error.message);
+        });
+    }, [active, loaded]);
+
+    return (
+        <div hidden={!active}>
+            <div class="toolbar">
+                <div class="muted small">{state ? `${state.authPath} · ${state.vaultPath}` : ''}</div>
+                <div class="toolbar-actions">
+                    <button type="button" onClick={() => clear().catch((error) => setStatus(error.message))}>
+                        Clear live
+                    </button>
+                    <button
+                        type="button"
+                        aria-busy={exporting}
+                        disabled={exporting || !state?.entries.length}
+                        onClick={() => runPlatformExport('kiro', 'Kiro', setStatus, setExporting)}
+                    >
+                        Export
+                    </button>
+                </div>
+            </div>
+            <section class="panel">
+                <div class="muted small">
+                    While signed in, save the current account. Then fully quit Kiro and use Clear live. Reopen Kiro,
+                    sign into the next account, and save it. To switch later, quit Kiro, load an account here, then
+                    reopen Kiro.
+                </div>
+                <form onSubmit={save}>
+                    <input
+                        value={key}
+                        placeholder="Account label"
+                        autocomplete="off"
+                        onInput={(event) => setKey(event.currentTarget.value)}
+                    />
+                    <button class="primary" type="submit">
+                        Save current
+                    </button>
+                </form>
+                <div class="status muted">{status}</div>
+            </section>
+            <section class="list">
+                {state?.entries.length ? (
+                    state.entries.map((entry) => (
+                        <AccountRow
+                            key={entry.key}
+                            entry={entry}
+                            pending={pendingKey === entry.key}
+                            onDelete={(entryKey) =>
+                                deleteSavedAccount('kiro', 'Kiro', entryKey, refresh, setStatus, setPendingKey)
+                            }
+                            onLoad={load}
+                            showLimits={false}
                         />
                     ))
                 ) : (
@@ -612,6 +810,16 @@ const MinimaxPanel = ({ active }: { active: boolean }) => {
                             key={entry.key}
                             entry={entry}
                             pending={pendingKey === entry.key}
+                            onDelete={(entryKey) =>
+                                deleteSavedAccount(
+                                    'minimax',
+                                    'MiniMax',
+                                    entryKey,
+                                    () => refresh(false),
+                                    setStatus,
+                                    setPendingKey,
+                                )
+                            }
                             onLoad={load}
                             onRefresh={refreshOne}
                             onSync={syncCurrent}
@@ -626,7 +834,21 @@ const MinimaxPanel = ({ active }: { active: boolean }) => {
 };
 
 const App = () => {
-    const [tab, setTab] = useState<Tab>('antigravity');
+    const [tab, setTab] = useState<PlatformTab>(() => tabFromPath(window.location.pathname));
+
+    const selectTab = (nextTab: PlatformTab) => {
+        if (nextTab === tab) {
+            return;
+        }
+        history.pushState(null, '', pathForTab(nextTab));
+        setTab(nextTab);
+    };
+
+    useEffect(() => {
+        const updateTabFromLocation = () => setTab(tabFromPath(window.location.pathname));
+        window.addEventListener('popstate', updateTabFromLocation);
+        return () => window.removeEventListener('popstate', updateTabFromLocation);
+    }, []);
 
     return (
         <main>
@@ -640,23 +862,27 @@ const App = () => {
                 <button
                     type="button"
                     class={tab === 'antigravity' ? 'tab active' : 'tab'}
-                    onClick={() => setTab('antigravity')}
+                    onClick={() => selectTab('antigravity')}
                 >
                     Antigravity
                 </button>
-                <button type="button" class={tab === 'codex' ? 'tab active' : 'tab'} onClick={() => setTab('codex')}>
+                <button type="button" class={tab === 'codex' ? 'tab active' : 'tab'} onClick={() => selectTab('codex')}>
                     Codex
+                </button>
+                <button type="button" class={tab === 'kiro' ? 'tab active' : 'tab'} onClick={() => selectTab('kiro')}>
+                    Kiro
                 </button>
                 <button
                     type="button"
                     class={tab === 'minimax' ? 'tab active' : 'tab'}
-                    onClick={() => setTab('minimax')}
+                    onClick={() => selectTab('minimax')}
                 >
                     MiniMax
                 </button>
             </nav>
             <AntigravityPanel active={tab === 'antigravity'} />
             <CodexPanel active={tab === 'codex'} />
+            <KiroPanel active={tab === 'kiro'} />
             <MinimaxPanel active={tab === 'minimax'} />
             <footer class="footer">
                 <a href={packageJson.homepage} target="_blank" rel="noreferrer">

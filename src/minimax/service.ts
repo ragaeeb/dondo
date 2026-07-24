@@ -128,6 +128,18 @@ export const loadMinimax = async (key: string) => {
     });
 };
 
+export const deleteMinimax = async (key: string) => {
+    const safeKey = assertAccountKey(key);
+    await updateVault(async (vault) => {
+        if (!vault.minimax.data[safeKey]) {
+            throw publicError(404, `No MiniMax config named ${safeKey}`);
+        }
+        delete vault.minimax.data[safeKey];
+        delete vault.minimax.limits[safeKey];
+        return { result: undefined };
+    });
+};
+
 export const minimaxState = async (options: { refreshLimitKey?: string; refreshLimits?: boolean } = {}) => {
     const refreshLimitKey = options.refreshLimitKey ? assertAccountKey(options.refreshLimitKey) : undefined;
     const vault = await updateVault(async (current) => {

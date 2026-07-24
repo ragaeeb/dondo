@@ -77,6 +77,18 @@ export const loadAntigravity = async (key: string) => {
     await restoreSnapshot(snap);
 };
 
+export const deleteAntigravity = async (key: string) => {
+    const safeKey = assertAccountKey(key);
+    await updateVault(async (vault) => {
+        if (!vault.antigravity.data[safeKey]) {
+            throw publicError(404, `No snapshot named ${safeKey}`);
+        }
+        delete vault.antigravity.data[safeKey];
+        delete vault.antigravity.limits[safeKey];
+        return { result: undefined };
+    });
+};
+
 export const clearAntigravity = async () => {
     await clearLiveAuth();
 };

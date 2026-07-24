@@ -54,6 +54,16 @@ it('should apply security headers to the UI shell', async () => {
     expect(response.headers.get('content-security-policy')).toContain("default-src 'self'");
 });
 
+it('should serve the UI shell for direct platform routes', async () => {
+    for (const platform of ['antigravity', 'codex', 'kiro', 'minimax']) {
+        const response = await app(new Request(`http://127.0.0.1:3000/${platform}`));
+
+        expect(response.status).toBe(200);
+        expect(response.headers.get('content-type')).toBe('text/html');
+        expect(await response.text()).toContain('<title>Dondo</title>');
+    }
+});
+
 it('should reject non-local API origins', async () => {
     const response = await app(
         new Request('http://127.0.0.1:3000/api/codex/state', {
