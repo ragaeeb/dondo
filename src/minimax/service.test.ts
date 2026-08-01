@@ -9,7 +9,8 @@ const runMiniMaxScript = async (env: Record<string, string>) => {
         const configPath = process.env.MINIMAX_CONFIG_PATH;
         const vaultPath = process.env.DONDO_VAULT;
         await saveMinimax('saved');
-        await Bun.write(configPath, JSON.stringify({ user: { userID: 'other' }, tokens: { accessToken: 'dummy-other' } }));
+        const liveToken = 'header.' + Buffer.from(JSON.stringify({ user: { id: 'saved-user' } })).toString('base64url') + '.live';
+        await Bun.write(configPath, JSON.stringify({ user: { userID: 'other' }, tokens: { accessToken: liveToken } }));
         const before = await minimaxState();
         await loadMinimax('saved');
         const after = await minimaxState();
@@ -22,6 +23,7 @@ const runMiniMaxScript = async (env: Record<string, string>) => {
             quotaOk: after.entries[0]?.quota?.ok ?? null,
             limitUpdatedAt: after.entries[0]?.limitUpdatedAt ?? '',
             fiveHourRemaining: after.entries[0]?.quota?.ok ? after.entries[0].quota.models['minimax-5-hour']?.percentage ?? null : null,
+            freeQuotaDetail: after.entries[0]?.quota?.ok ? after.entries[0].quota.models['minimax-free-daily']?.detail ?? '' : '',
             vaultHasPlainToken: vaultText.includes('dummy-token'),
         }));
     `;
@@ -43,6 +45,7 @@ const runMiniMaxScript = async (env: Record<string, string>) => {
         loadedUserID: string;
         quotaOk: boolean;
         fiveHourRemaining: number | null;
+        freeQuotaDetail: string;
         vaultHasPlainToken: boolean;
     };
 };
@@ -54,6 +57,15 @@ it('should save and load MiniMax configs with MiniMax Code quota limits', async 
     const server = Bun.serve({
         fetch: (request) => {
             const pathname = new URL(request.url).pathname;
+            if (pathname.endsWith('/v1/api/user/info')) {
+                return Response.json({ data: { userInfo: { realUserID: 'saved-user' } } });
+            }
+            if (pathname.endsWith('/matrix/api/v1/user/get_user_extra_info')) {
+                return Response.json({
+                    base_resp: { status_code: 0, status_msg: 'success' },
+                    workspaces: [{ has_token_plan: false, opcredit_balance: 0, selected: true }],
+                });
+            }
             if (pathname.endsWith('/v1/api/openplatform/coding_plan/remains')) {
                 return Response.json({
                     model_remains: [
@@ -75,21 +87,30 @@ it('should save and load MiniMax configs with MiniMax Code quota limits', async 
     try {
         await Bun.write(
             configPath,
-            JSON.stringify({ tokens: { accessToken: 'dummy-token' }, user: { userID: 'saved-user' } }),
+            JSON.stringify({
+                tokens: {
+                    accessToken:
+                        'header.' + Buffer.from(JSON.stringify({ user: { id: 'saved-user' } })).toString('base64url') + '.saved',
+                },
+                user: { userID: 'saved-user' },
+            }),
         );
 
         const result = await runMiniMaxScript({
             DONDO_VAULT: vaultPath,
             MINIMAX_CONFIG_PATH: configPath,
+            MINIMAX_AGENT_URL: `http://127.0.0.1:${server.port}`,
+            MINIMAX_UUID: '00000000-0000-4000-8000-000000000000',
             MINIMAX_PLATFORM_URL: `http://127.0.0.1:${server.port}`,
         });
 
-        expect(result.activeBeforeLoad).toBe(false);
+        expect(result.activeBeforeLoad).toBe(true);
         expect(result.activeAfterLoad).toBe(true);
         expect(result.loadedUserID).toBe('saved-user');
         expect(result.quotaOk).toBe(true);
         expect(result.limitUpdatedAt).toBeTruthy();
-        expect(result.fiveHourRemaining).toBe(48);
+        expect(result.fiveHourRemaining).toBeNull();
+        expect(result.freeQuotaDetail).toBe('Token valid · MiniMax does not report a free daily quota');
         expect(result.vaultHasPlainToken).toBe(false);
     } finally {
         server.stop(true);

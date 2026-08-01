@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { usageToLimitResult } from './usage.ts';
+import { usageToLimitResult, workspaceToLimitResult } from './usage.ts';
 
 it('maps MiniMax Code 5-hour and weekly quota fields', () => {
     const result = usageToLimitResult(
@@ -61,5 +61,26 @@ it('treats MiniMax non-plan access as valid without inventing a numeric quota', 
         },
         ok: true,
         tier: 'MiniMax Code · no token plan',
+    });
+});
+
+it('does not mistake the commerce credit balance for a free daily quota', () => {
+    expect(
+        workspaceToLimitResult({
+            creditBalance: 0,
+            hasTokenPlan: false,
+        }),
+    ).toEqual({
+        expires: '',
+        models: {
+            'minimax-free-daily': {
+                detail: 'Token valid · MiniMax does not report a free daily quota',
+                displayName: 'Free daily quota',
+                percentage: 100,
+                resetTime: '',
+            },
+        },
+        ok: true,
+        tier: 'MiniMax Code · free access',
     });
 });

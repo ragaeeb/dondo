@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const env = (key: string) => {
     const value = process.env[key]?.trim();
@@ -65,6 +65,10 @@ export const MINIMAX_CONFIG_PATH =
     env('MINIMAX_CONFIG_PATH') ??
     join(homedir(), 'Library', 'Application Support', 'MiniMax Agent', 'minimax-agent-config.json');
 export const MINIMAX_PLATFORM_URL = env('MINIMAX_PLATFORM_URL') ?? 'https://platform.minimax.io';
+export const MINIMAX_AGENT_URL = env('MINIMAX_AGENT_URL') ?? 'https://agent.minimax.io';
+export const MINIMAX_UUID = env('MINIMAX_UUID');
+export const MINIMAX_LOCAL_STORAGE_PATH =
+    env('MINIMAX_LOCAL_STORAGE_PATH') ?? join(dirname(MINIMAX_CONFIG_PATH), 'Local Storage', 'leveldb');
 
 export const VAULT_KEY_SERVICE = 'dondo';
 export const VAULT_KEY_ACCOUNT = 'vault-key';

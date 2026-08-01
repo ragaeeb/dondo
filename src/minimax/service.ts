@@ -3,7 +3,7 @@ import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { writePrivateFile } from '../storage/file.ts';
 import { readVault, updateVault } from '../storage/vault.ts';
 import type { AppVault, MinimaxSnapshot } from '../types.ts';
-import { fetchMiniMaxLimits, type MiniMaxConfig } from './usage.ts';
+import { fetchMiniMaxLimits, miniMaxTokenIdentity, type MiniMaxConfig } from './usage.ts';
 
 type StoredMinimaxConfig = MiniMaxConfig & {
     user?: {
@@ -33,13 +33,13 @@ const stringValue = (value: unknown) => (typeof value === 'string' && value ? va
 
 const identity = (config: StoredMinimaxConfig) => {
     return (
+        stringValue(config.tokens?.accessToken ? miniMaxTokenIdentity(config.tokens.accessToken) : '') ??
         stringValue(config.user?.realUserID) ??
         stringValue(config.user?.userID) ??
         stringValue(config.user?.userMail) ??
         stringValue(config.user?.email) ??
         stringValue(config.user?.username) ??
         stringValue(config.user?.userName) ??
-        stringValue(config.tokens?.accessToken) ??
         ''
     );
 };
@@ -55,13 +55,25 @@ const hasLegacyPlaceholderLimit = (vault: AppVault, key: string) => {
     return quota?.ok && 'minimax-loaded-at' in quota.models;
 };
 
+const hasMislabelledFreeQuotaLimit = (vault: AppVault, key: string) => {
+    const quota = vault.minimax.limits[key]?.quota;
+    const detail = quota?.ok ? quota.models['minimax-free-daily']?.detail : undefined;
+    return detail?.includes('free daily credit') ?? false;
+};
+
 const updateMiniMaxLimits = async (vault: AppVault, force: boolean, targetKey?: string) => {
     let changed = false;
     if (targetKey && !vault.minimax.data[targetKey]) {
         throw publicError(404, `No MiniMax config named ${targetKey}`);
     }
     for (const [key, snap] of Object.entries(vault.minimax.data)) {
-        if ((targetKey && key !== targetKey) || (!force && vault.minimax.limits[key] && !hasLegacyPlaceholderLimit(vault, key))) {
+        if (
+            (targetKey && key !== targetKey) ||
+            (!force &&
+                vault.minimax.limits[key] &&
+                !hasLegacyPlaceholderLimit(vault, key) &&
+                !hasMislabelledFreeQuotaLimit(vault, key))
+        ) {
             continue;
         }
         try {
