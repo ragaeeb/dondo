@@ -7,6 +7,7 @@ import {
     loadAntigravity,
     saveAntigravity,
 } from './antigravity/service.ts';
+import { clineState, deleteCline, loadCline, saveCline } from './cline/service.ts';
 import { codexState, deleteCodex, loadCodex, saveCodex } from './codex/service.ts';
 import { HOST, PORT } from './config.ts';
 import { errorMessage, errorStatus, publicError } from './errors.ts';
@@ -255,6 +256,43 @@ const routes = new Map<string, Route>([
         },
     ],
     ['GET /api/codex/state', { handler: async () => json(await codexState()) }],
+    ['GET /api/cline/state', { handler: async () => json(await clineState()) }],
+    [
+        'POST /api/cline/export',
+        {
+            handler: async (req, dependencies) => {
+                assertExportConfirmation(req);
+                return exportJson('cline', dependencies.exportWallet);
+            },
+        },
+    ],
+    [
+        'POST /api/cline/save',
+        {
+            handler: async (req) => {
+                await saveCline(await requiredKey(req));
+                return json({ ok: true });
+            },
+        },
+    ],
+    [
+        'POST /api/cline/load',
+        {
+            handler: async (req) => {
+                await loadCline(await requiredKey(req));
+                return json({ ok: true });
+            },
+        },
+    ],
+    [
+        'POST /api/cline/delete',
+        {
+            handler: async (req) => {
+                await deleteCline(await requiredKey(req));
+                return json({ ok: true });
+            },
+        },
+    ],
     [
         'POST /api/codex/export',
         {
@@ -412,7 +450,7 @@ const handleApi = async (url: URL, req: Request, dependencies: ServerDependencie
 };
 
 const handleAsset = (url: URL, assets: Assets) => {
-    if (['/', '/antigravity', '/codex', '/kiro', '/minimax'].includes(url.pathname)) {
+    if (['/', '/antigravity', '/cline', '/codex', '/kiro', '/minimax'].includes(url.pathname)) {
         return withHeaders(new Response(renderHtml()), { 'Cache-Control': 'no-store', 'Content-Type': 'text/html' });
     }
     if (url.pathname === '/assets/app.js') {

@@ -94,6 +94,48 @@ it('should export MiniMax accounts with decrypted parsed configs', async () => {
     }
 });
 
+it('should export Cline accounts with decrypted parsed secrets', async () => {
+    const { dir, path } = await tempVaultPath();
+    const secrets = {
+        'cline:clineAccountId': JSON.stringify({
+            idToken: 'cline-id-token',
+            refreshToken: 'cline-refresh-token',
+            userInfo: { email: 'cline@example.com', id: 'cline-user' },
+        }),
+        unrelated: 'setting',
+    };
+    try {
+        await writeVaultFixture(path, {
+            cline: {
+                data: {
+                    personal: {
+                        createdAt: '2026-01-01T00:00:00.000Z',
+                        secrets: await seal(JSON.stringify(secrets), TEST_KEY),
+                        updatedAt: '2026-01-02T00:00:00.000Z',
+                    },
+                },
+                limits: {},
+            },
+        });
+
+        const exported = await exportPlatformWallet('cline', path, TEST_KEY);
+
+        expect(exported).toMatchObject({
+            accounts: [
+                {
+                    config: secrets,
+                    createdAt: '2026-01-01T00:00:00.000Z',
+                    key: 'personal',
+                    updatedAt: '2026-01-02T00:00:00.000Z',
+                },
+            ],
+            platform: 'cline',
+        });
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});
+
 it('should export Kiro accounts with decrypted parsed auth', async () => {
     const { dir, path } = await tempVaultPath();
     const auth = {

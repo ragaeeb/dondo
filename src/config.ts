@@ -30,6 +30,8 @@ export const PORT = parsePort();
 export const DATA_DIR = env('DONDO_DATA_DIR') ?? appDataDir();
 export const VAULT_PATH = env('DONDO_VAULT') ?? env('ANTIGRAVITY_VAULT') ?? join(DATA_DIR, 'vault.json');
 export const CODEX_AUTH_PATH = env('CODEX_AUTH_PATH') ?? join(homedir(), '.codex', 'auth.json');
+export const CLINE_SECRETS_PATH =
+    env('CLINE_SECRETS_PATH') ?? join(homedir(), '.cline', 'data', 'secrets.json');
 export const KIRO_AUTH_PATH = env('KIRO_AUTH_PATH') ?? join(homedir(), '.aws', 'sso', 'cache', 'kiro-auth-token.json');
 export const KIRO_PROFILE_PATH =
     env('KIRO_PROFILE_PATH') ??

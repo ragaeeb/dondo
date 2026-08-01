@@ -46,3 +46,11 @@ it('should omit Kiro usage entries without a positive limit', () => {
         ok: true,
     });
 });
+
+it('should reject Kiro usage when no positive limit is available', () => {
+    expect(usageToLimitResult({})).toEqual({ error: 'Kiro usage returned no quota fields', ok: false });
+    expect(usageToLimitResult({ usageBreakdownList: [] })).toEqual({
+        error: 'Kiro usage returned no quota fields',
+        ok: false,
+    });
+});

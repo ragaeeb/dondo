@@ -24,6 +24,7 @@ type KiroUsagePayload = {
 };
 
 const REQUEST_TIMEOUT_MS = 15_000;
+const AWS_REGION_RE = /^[a-z]{2}(?:-[a-z]+)+-\d+$/u;
 
 const resetIso = (value: number | string | undefined) => {
     const timestamp =
@@ -40,7 +41,8 @@ const usageEndpoint = (profileArn: string) => {
     if (KIRO_USAGE_URL) {
         return KIRO_USAGE_URL;
     }
-    const region = profileArn.split(':')[3] || 'us-east-1';
+    const candidate = profileArn.split(':')[3];
+    const region = candidate && AWS_REGION_RE.test(candidate) ? candidate : 'us-east-1';
     return `https://management.${region}.kiro.dev/getUsageLimits`;
 };
 
@@ -60,6 +62,10 @@ export const usageToLimitResult = (payload: KiroUsagePayload): LimitResult => {
             resetTime: resetIso(breakdown.nextDateReset ?? payload.nextDateReset),
             used,
         };
+    }
+
+    if (Object.keys(models).length === 0) {
+        return { error: 'Kiro usage returned no quota fields', ok: false };
     }
 
     return {

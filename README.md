@@ -13,11 +13,12 @@
 [![Antigravity](https://img.shields.io/badge/switches-Antigravity-2563eb)](https://antigravity.google)
 [![Codex](https://img.shields.io/badge/switches-Codex-10a37f)](https://openai.com/codex)
 [![Kiro](https://img.shields.io/badge/switches-Kiro-7c3aed)](https://kiro.dev)
+[![Cline](https://img.shields.io/badge/switches-Cline-0f766e)](https://cline.bot)
 [![License: MIT](https://img.shields.io/badge/license-MIT-111827.svg)](./LICENSE)
 [![GitHub issues](https://img.shields.io/github/issues/ragaeeb/dondo?color=6f42c1)](https://github.com/ragaeeb/dondo/issues)
 [![wakatime](https://wakatime.com/badge/user/a0b906ce-b8e7-4463-8bce-383238df6d4b/project/1c226a67-6f05-42d3-a8c3-591ef0fa09fd.svg)](https://wakatime.com/badge/user/a0b906ce-b8e7-4463-8bce-383238df6d4b/project/1c226a67-6f05-42d3-a8c3-591ef0fa09fd)
 
-Dondo is a small local Bun app for saving and switching local AI tool accounts. It starts a local web UI, stores saved accounts in an encrypted local vault, and currently supports Antigravity, Codex, Kiro, and MiniMax.
+Dondo is a small local Bun app for saving and switching local AI tool accounts. It starts a local web UI, stores saved accounts in an encrypted local vault, and currently supports Antigravity, Codex, Cline, Kiro, and MiniMax.
 
 Current platform support is macOS. Dondo uses the macOS `security` CLI for the local vault key, and Antigravity account switching uses macOS Keychain entries.
 
@@ -77,6 +78,10 @@ Vault shape:
         "data": {},
         "limits": {}
     },
+    "cline": {
+        "data": {},
+        "limits": {}
+    },
     "kiro": {
         "data": {},
         "limits": {}
@@ -95,6 +100,10 @@ Vault shape:
 `codex.data` stores encrypted snapshots of `~/.codex/auth.json`. Loading a saved Codex account writes that snapshot back to `~/.codex/auth.json` with `0600` permissions.
 
 `codex.limits` stores cached Codex ChatGPT usage data. Dondo fetches missing limits on first load and refreshes cached limits only when the UI `Refresh limits` button is used.
+
+`cline.data` stores encrypted snapshots of `~/.cline/data/secrets.json`. Loading a saved Cline account writes the complete
+secrets file back to the same path with `0600` permissions. Cline account rows use the stable account identity from the
+file only to show which saved account is active; token values are never returned by the state API or rendered in the UI.
 
 `kiro.data` stores encrypted snapshots of `~/.aws/sso/cache/kiro-auth-token.json`. Loading a saved Kiro account
 writes a freshly validated snapshot back to the same path with `0600` permissions. Kiro watches this file and picks
@@ -115,8 +124,6 @@ saved account only when `Refresh limits` is selected.
 `minimax.data` stores encrypted snapshots of `~/Library/Application Support/MiniMax Agent/minimax-agent-config.json`. Loading a saved MiniMax account writes that snapshot back to the same path with `0600` permissions.
 
 `minimax.limits` caches the 5-hour and weekly MiniMax Code quotas fetched from its current coding-plan endpoint. Dondo fetches missing limits when the MiniMax tab opens and refreshes every saved account only when `Refresh limits` is selected.
-
-`minimax.limits` stores mocked MiniMax limit data. The current implementation records the load or refresh time because the MiniMax rate-limit endpoint is not yet known.
 
 Each limit cache entry has this shape:
 
@@ -148,6 +155,7 @@ ANTIGRAVITY_KEYCHAIN=login.keychain-db
 ANTIGRAVITY_VERSION=2.0.3
 ANTIGRAVITY_LANGUAGE_SERVER_PATH=/Applications/Antigravity.app/Contents/Resources/bin/language_server
 CODEX_AUTH_PATH=~/.codex/auth.json
+CLINE_SECRETS_PATH=~/.cline/data/secrets.json
 KIRO_AUTH_PATH=~/.aws/sso/cache/kiro-auth-token.json
 KIRO_PROFILE_PATH="~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/profile.json"
 KIRO_AUTH_REFRESH_URL=https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken
@@ -177,6 +185,11 @@ require `POST` and the `X-Dondo-Export: 1` header.
 - `POST /api/codex/save` with `{ "key": "label" }`
 - `POST /api/codex/load` with `{ "key": "label" }`
 - `POST /api/codex/delete` with `{ "key": "label" }`
+- `GET /api/cline/state`
+- `POST /api/cline/export`
+- `POST /api/cline/save` with `{ "key": "label" }`
+- `POST /api/cline/load` with `{ "key": "label" }`
+- `POST /api/cline/delete` with `{ "key": "label" }`
 - `GET /api/kiro/state`
 - `POST /api/kiro/limits/refresh` with optional `{ "key": "label" }`
 - `POST /api/kiro/export`

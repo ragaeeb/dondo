@@ -246,7 +246,7 @@ export const usageToLimitResult = (payload: UsagePayload): LimitResult => {
                 'minimax-free-access': {
                     detail: 'MiniMax does not report a numeric allowance for non-plan access',
                     displayName: 'Free / non-plan access',
-                    percentage: 0,
+                    percentage: 100,
                     resetTime: '',
                 },
             },
@@ -324,7 +324,7 @@ export const fetchMiniMaxLimits = async (config: MiniMaxConfig): Promise<LimitRe
         return { error: 'Saved MiniMax access token is expired or rejected', ok: false };
     }
     if (!response.ok) {
-        throw new Error(`MiniMax usage request failed with HTTP ${response.status}`);
+        return { error: `MiniMax usage request failed with HTTP ${response.status}`, ok: false };
     }
     return usageToLimitResult((await response.json()) as UsagePayload);
 };

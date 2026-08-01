@@ -2,7 +2,7 @@ import { MINIMAX_CONFIG_PATH, VAULT_PATH } from '../config.ts';
 import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { writePrivateFile } from '../storage/file.ts';
 import { readVault, updateVault } from '../storage/vault.ts';
-import type { AppVault, MinimaxSnapshot } from '../types.ts';
+import type { AppVault, LimitCache, MinimaxSnapshot } from '../types.ts';
 import { fetchMiniMaxLimits, miniMaxTokenIdentity, type MiniMaxConfig } from './usage.ts';
 
 type StoredMinimaxConfig = MiniMaxConfig & {
@@ -61,8 +61,8 @@ const hasMislabelledFreeQuotaLimit = (vault: AppVault, key: string) => {
     return detail?.includes('free daily credit') ?? false;
 };
 
-const updateMiniMaxLimits = async (vault: AppVault, force: boolean, targetKey?: string) => {
-    let changed = false;
+const fetchMiniMaxLimitUpdates = async (vault: AppVault, force: boolean, targetKey?: string) => {
+    const updates = new Map<string, LimitCache>();
     if (targetKey && !vault.minimax.data[targetKey]) {
         throw publicError(404, `No MiniMax config named ${targetKey}`);
     }
@@ -77,14 +77,16 @@ const updateMiniMaxLimits = async (vault: AppVault, force: boolean, targetKey?: 
             continue;
         }
         try {
-            vault.minimax.limits[key] = { fetchedAt: new Date().toISOString(), quota: await fetchMiniMaxLimits(parseConfig(snap.config)) };
+            updates.set(key, {
+                fetchedAt: new Date().toISOString(),
+                quota: await fetchMiniMaxLimits(parseConfig(snap.config)),
+            });
         } catch (error) {
-            vault.minimax.limits[key] = { fetchedAt: new Date().toISOString(), quota: cleanLimitError(error) };
+            updates.set(key, { fetchedAt: new Date().toISOString(), quota: cleanLimitError(error) });
         }
-        changed = true;
     }
 
-    return changed;
+    return updates;
 };
 
 export const saveMinimax = async (key: string) => {
@@ -144,8 +146,20 @@ export const deleteMinimax = async (key: string) => {
 
 export const minimaxState = async (options: { refreshLimitKey?: string; refreshLimits?: boolean } = {}) => {
     const refreshLimitKey = options.refreshLimitKey ? assertAccountKey(options.refreshLimitKey) : undefined;
+    const snapshot = await readVault();
+    const updates = await fetchMiniMaxLimitUpdates(snapshot, options.refreshLimits === true, refreshLimitKey);
     const vault = await updateVault(async (current) => {
-        const changed = await updateMiniMaxLimits(current, options.refreshLimits === true, refreshLimitKey);
+        if (refreshLimitKey && !current.minimax.data[refreshLimitKey]) {
+            throw publicError(404, `No MiniMax config named ${refreshLimitKey}`);
+        }
+        let changed = false;
+        for (const [key, update] of updates) {
+            if (!current.minimax.data[key]) {
+                continue;
+            }
+            current.minimax.limits[key] = update;
+            changed = true;
+        }
         return { result: current, write: changed };
     });
     const activeConfig = parseConfig(await liveConfig().catch(() => ''));

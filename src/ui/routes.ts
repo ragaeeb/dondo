@@ -1,6 +1,6 @@
-export type PlatformTab = 'antigravity' | 'codex' | 'kiro' | 'minimax';
+export type PlatformTab = 'antigravity' | 'cline' | 'codex' | 'kiro' | 'minimax';
 
-const tabs = new Set<PlatformTab>(['antigravity', 'codex', 'kiro', 'minimax']);
+const tabs = new Set<PlatformTab>(['antigravity', 'cline', 'codex', 'kiro', 'minimax']);
 
 export const tabFromPath = (pathname: string): PlatformTab => {
     const candidate = pathname.replace(/^\/|\/$/g, '');

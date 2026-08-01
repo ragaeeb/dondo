@@ -55,7 +55,7 @@ it('should apply security headers to the UI shell', async () => {
 });
 
 it('should serve the UI shell for direct platform routes', async () => {
-    for (const platform of ['antigravity', 'codex', 'kiro', 'minimax']) {
+    for (const platform of ['antigravity', 'codex', 'kiro', 'minimax', 'cline']) {
         const response = await app(new Request(`http://127.0.0.1:3000/${platform}`));
 
         expect(response.status).toBe(200);

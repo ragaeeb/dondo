@@ -15,6 +15,7 @@ it('should read a missing vault as nested empty platform sections', async () => 
         await expect(readVault(path)).resolves.toEqual({
             antigravity: { data: {}, limits: {} },
             codex: { data: {}, limits: {} },
+            cline: { data: {}, limits: {} },
             kiro: { data: {}, limits: {} },
             minimax: { data: {}, limits: {} },
         });
@@ -30,6 +31,7 @@ it('should write the vault with private file permissions', async () => {
             {
                 antigravity: { data: {}, limits: {} },
                 codex: { data: {}, limits: {} },
+                cline: { data: {}, limits: {} },
                 kiro: { data: {}, limits: {} },
                 minimax: { data: {}, limits: {} },
             },
@@ -79,6 +81,13 @@ it('should serialize queued vault updates', async () => {
                 return { result: undefined };
             }, path),
             updateVault(async (vault) => {
+                vault.cline.limits.e = {
+                    fetchedAt: 'e',
+                    quota: { error: 'e', ok: false },
+                };
+                return { result: undefined };
+            }, path),
+            updateVault(async (vault) => {
                 vault.kiro.limits.d = {
                     fetchedAt: 'd',
                     quota: { error: 'd', ok: false },
@@ -92,6 +101,7 @@ it('should serialize queued vault updates', async () => {
         expect(vault.codex.limits.b?.fetchedAt).toBe('b');
         expect(vault.minimax.limits.c?.fetchedAt).toBe('c');
         expect(vault.kiro.limits.d?.fetchedAt).toBe('d');
+        expect(vault.cline.limits.e?.fetchedAt).toBe('e');
     } finally {
         await rm(dir, { force: true, recursive: true });
     }

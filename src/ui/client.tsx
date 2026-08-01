@@ -25,6 +25,12 @@ type CodexState = {
     vaultPath: string;
 };
 
+type ClineState = {
+    entries: AccountEntry[];
+    secretsPath: string;
+    vaultPath: string;
+};
+
 type KiroState = {
     authPath: string;
     entries: AccountEntry[];
@@ -549,6 +555,137 @@ const CodexPanel = ({ active }: { active: boolean }) => {
     );
 };
 
+const ClinePanel = ({ active }: { active: boolean }) => {
+    const [state, setState] = useState<ClineState | null>(null);
+    const [status, setStatus] = useState('');
+    const [key, setKey] = useState('');
+    const [loaded, setLoaded] = useState(false);
+    const [pendingKey, setPendingKey] = useState('');
+    const [exporting, setExporting] = useState(false);
+
+    const refresh = async () => {
+        setStatus('Loading accounts...');
+        setState(await api<ClineState>('/api/cline/state'));
+        setLoaded(true);
+        setStatus('');
+    };
+
+    const save = async (event: Event) => {
+        event.preventDefault();
+        const trimmed = key.trim();
+        if (!trimmed) {
+            return;
+        }
+        setStatus('Saving...');
+        try {
+            await api('/api/cline/save', { key: trimmed });
+            setKey('');
+            await refresh();
+            setStatus(`Saved ${trimmed}`);
+        } catch (error) {
+            setStatus(error instanceof Error ? error.message : String(error));
+        }
+    };
+
+    const load = async (entryKey: string) => {
+        setStatus(`Loading ${entryKey}...`);
+        setPendingKey(entryKey);
+        try {
+            await api('/api/cline/load', { key: entryKey });
+            await refresh();
+            setStatus(`Loaded ${entryKey}`);
+        } catch (error) {
+            setStatus(error instanceof Error ? error.message : String(error));
+        } finally {
+            setPendingKey('');
+        }
+    };
+
+    const syncCurrent = async (entryKey: string) => {
+        if (!confirmSyncCurrent('Cline', entryKey)) {
+            return;
+        }
+        setStatus(`Syncing current Cline auth to ${entryKey}...`);
+        setPendingKey(entryKey);
+        try {
+            await api('/api/cline/save', { key: entryKey });
+            await refresh();
+            setStatus(`Synced ${entryKey}`);
+        } catch (error) {
+            setStatus(error instanceof Error ? error.message : String(error));
+        } finally {
+            setPendingKey('');
+        }
+    };
+
+    useEffect(() => {
+        if (!active || loaded) {
+            return;
+        }
+        refresh().catch((error) => {
+            setStatus(error.message);
+        });
+    }, [active, loaded]);
+
+    return (
+        <div hidden={!active}>
+            <div class="toolbar">
+                <div class="muted small">{state ? `${state.secretsPath} · ${state.vaultPath}` : ''}</div>
+                <div class="toolbar-actions">
+                    <button
+                        type="button"
+                        aria-busy={exporting}
+                        disabled={exporting || !state?.entries.length}
+                        onClick={() => runPlatformExport('cline', 'Cline', setStatus, setExporting)}
+                    >
+                        Export
+                    </button>
+                </div>
+            </div>
+            <section class="panel">
+                <form onSubmit={save}>
+                    <input
+                        value={key}
+                        placeholder="Account label"
+                        autocomplete="off"
+                        onInput={(event) => setKey(event.currentTarget.value)}
+                    />
+                    <button class="primary" type="submit">
+                        Save current
+                    </button>
+                </form>
+                <div class="status muted">{status}</div>
+            </section>
+            <section class="list">
+                {state?.entries.length ? (
+                    state.entries.map((entry) => (
+                        <AccountRow
+                            key={entry.key}
+                            entry={entry}
+                            pending={pendingKey === entry.key}
+                            onDelete={(entryKey) =>
+                                deleteSavedAccount(
+                                    'cline',
+                                    'Cline',
+                                    entryKey,
+                                    () => refresh(),
+                                    setStatus,
+                                    setPendingKey,
+                                )
+                            }
+                            onLoad={load}
+                            onSync={syncCurrent}
+                            showLimits={false}
+                        />
+                    ))
+                ) : (
+                    <div class="muted">No saved accounts yet.</div>
+                )}
+            </section>
+        </div>
+    );
+};
+
 const KiroPanel = ({ active }: { active: boolean }) => {
     const [state, setState] = useState<KiroState | null>(null);
     const [status, setStatus] = useState('');
@@ -901,6 +1038,9 @@ const App = () => {
                 <button type="button" class={tab === 'codex' ? 'tab active' : 'tab'} onClick={() => selectTab('codex')}>
                     Codex
                 </button>
+                <button type="button" class={tab === 'cline' ? 'tab active' : 'tab'} onClick={() => selectTab('cline')}>
+                    Cline
+                </button>
                 <button type="button" class={tab === 'kiro' ? 'tab active' : 'tab'} onClick={() => selectTab('kiro')}>
                     Kiro
                 </button>
@@ -914,6 +1054,7 @@ const App = () => {
             </nav>
             <AntigravityPanel active={tab === 'antigravity'} />
             <CodexPanel active={tab === 'codex'} />
+            <ClinePanel active={tab === 'cline'} />
             <KiroPanel active={tab === 'kiro'} />
             <MinimaxPanel active={tab === 'minimax'} />
             <footer class="footer">

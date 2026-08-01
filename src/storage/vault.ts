@@ -2,6 +2,8 @@ import { VAULT_PATH } from '../config.ts';
 import { publicError } from '../errors.ts';
 import type {
     AppVault,
+    ClineVault,
+    ClineSnapshot,
     CodexSnapshot,
     CodexVault,
     KiroSnapshot,
@@ -24,6 +26,7 @@ const emptySection = <T>(): VaultSection<T> => ({ data: {}, limits: {} });
 
 const emptyVault = (): AppVault => ({
     antigravity: emptySection<Snapshot>(),
+    cline: emptySection<ClineSnapshot>(),
     codex: emptySection<CodexSnapshot>(),
     kiro: emptySection<KiroSnapshot>(),
     minimax: emptySection<MinimaxSnapshot>(),
@@ -47,6 +50,7 @@ const queueVaultOperation = <T>(operation: () => Promise<T>) => {
 const normalizeVault = (raw: unknown): AppVault => {
     const input = isRecord(raw) ? raw : {};
     const antigravity = isRecord(input.antigravity) ? input.antigravity : {};
+    const cline = isRecord(input.cline) ? input.cline : {};
     const codex = isRecord(input.codex) ? input.codex : {};
     const kiro = isRecord(input.kiro) ? input.kiro : {};
     const minimax = isRecord(input.minimax) ? input.minimax : {};
@@ -55,6 +59,10 @@ const normalizeVault = (raw: unknown): AppVault => {
         antigravity: {
             data: isRecord(antigravity.data) ? (antigravity.data as Record<string, Snapshot>) : {},
             limits: isRecord(antigravity.limits) ? (antigravity.limits as PlatformVault['limits']) : {},
+        },
+        cline: {
+            data: isRecord(cline.data) ? (cline.data as Record<string, ClineSnapshot>) : {},
+            limits: isRecord(cline.limits) ? (cline.limits as ClineVault['limits']) : {},
         },
         codex: {
             data: isRecord(codex.data) ? (codex.data as Record<string, CodexSnapshot>) : {},
@@ -107,6 +115,18 @@ const decryptCodex = async (codex: CodexVault, encryptionKey?: Buffer): Promise<
     limits: codex.limits ?? {},
 });
 
+const decryptCline = async (cline: ClineVault, encryptionKey?: Buffer): Promise<ClineVault> => ({
+    data: Object.fromEntries(
+        await Promise.all(
+            Object.entries(cline.data ?? {}).map(async ([key, snap]) => [
+                key,
+                { ...snap, secrets: await open(snap.secrets, encryptionKey) },
+            ]),
+        ),
+    ),
+    limits: cline.limits ?? {},
+});
+
 const encryptCodex = async (codex: CodexVault, encryptionKey?: Buffer): Promise<CodexVault> => ({
     data: Object.fromEntries(
         await Promise.all(
@@ -117,6 +137,18 @@ const encryptCodex = async (codex: CodexVault, encryptionKey?: Buffer): Promise<
         ),
     ),
     limits: codex.limits ?? {},
+});
+
+const encryptCline = async (cline: ClineVault, encryptionKey?: Buffer): Promise<ClineVault> => ({
+    data: Object.fromEntries(
+        await Promise.all(
+            Object.entries(cline.data ?? {}).map(async ([key, snap]) => [
+                key,
+                { ...snap, secrets: await seal(snap.secrets, encryptionKey) },
+            ]),
+        ),
+    ),
+    limits: cline.limits ?? {},
 });
 
 const decryptKiro = async (kiro: KiroVault, encryptionKey?: Buffer): Promise<KiroVault> => ({
@@ -201,6 +233,7 @@ const readVaultFile = async (path: string, key?: Buffer): Promise<AppVault> => {
     const vault = await readStoredVault(path);
     return {
         antigravity: await decryptPlatform(vault.antigravity, key),
+        cline: await decryptCline(vault.cline, key),
         codex: await decryptCodex(vault.codex, key),
         kiro: await decryptKiro(vault.kiro, key),
         minimax: await decryptMinimax(vault.minimax, key),
@@ -213,6 +246,7 @@ export const writeVault = async (vault: AppVault, path = VAULT_PATH, key?: Buffe
         `${JSON.stringify(
             {
                 antigravity: await encryptPlatform(vault.antigravity, key),
+                cline: await encryptCline(vault.cline, key),
                 codex: await encryptCodex(vault.codex, key),
                 kiro: await encryptKiro(vault.kiro, key),
                 minimax: await encryptMinimax(vault.minimax, key),
@@ -236,6 +270,9 @@ export const readVaultSection = async <Platform extends keyof AppVault>(
         const vault = await readStoredVault(path);
         if (platform === 'antigravity') {
             return (await decryptPlatform(vault.antigravity, key)) as AppVault[Platform];
+        }
+        if (platform === 'cline') {
+            return (await decryptCline(vault.cline, key)) as AppVault[Platform];
         }
         if (platform === 'codex') {
             return (await decryptCodex(vault.codex, key)) as AppVault[Platform];

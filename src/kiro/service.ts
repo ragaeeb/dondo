@@ -10,8 +10,8 @@ import {
 } from '../config.ts';
 import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { writePrivateFile } from '../storage/file.ts';
-import { updateVault } from '../storage/vault.ts';
-import type { AppVault, KiroSnapshot } from '../types.ts';
+import { readVault, updateVault } from '../storage/vault.ts';
+import type { AppVault, KiroSnapshot, LimitResult } from '../types.ts';
 import { fetchKiroLimits } from './usage.ts';
 
 type KiroAuth = {
@@ -195,13 +195,18 @@ const syncActiveKiro = async () => {
     });
 };
 
-const updateKiroLimits = async (
+type KiroLimitUpdate = {
+    auth?: string;
+    quota: LimitResult;
+};
+
+const fetchKiroLimitUpdates = async (
     vault: AppVault,
     force: boolean,
     targetKey: string | undefined,
     activeAuth: KiroAuth | null,
 ) => {
-    let changed = false;
+    const updates = new Map<string, KiroLimitUpdate>();
     if (targetKey && !vault.kiro.data[targetKey]) {
         throw publicError(404, `No Kiro auth named ${targetKey}`);
     }
@@ -212,13 +217,12 @@ const updateKiroLimits = async (
         }
         const auth = parseAuth(snap.auth);
         if (!auth) {
-            vault.kiro.limits[key] = {
-                fetchedAt: new Date().toISOString(),
+            updates.set(key, {
                 quota: { error: 'Saved Kiro auth JSON is invalid', ok: false },
-            };
-            changed = true;
+            });
             continue;
         }
+        let refreshedAuth: string | undefined;
         try {
             let quota = await fetchKiroLimits(auth);
             if (
@@ -227,21 +231,16 @@ const updateKiroLimits = async (
                 !isSameAuth(activeAuth, auth)
             ) {
                 const refreshed = await refreshSocialAuth(auth, key);
-                snap.auth = JSON.stringify(refreshed, null, 2);
-                snap.updatedAt = new Date().toISOString();
+                refreshedAuth = JSON.stringify(refreshed, null, 2);
                 quota = await fetchKiroLimits(refreshed);
             }
-            vault.kiro.limits[key] = {
-                fetchedAt: new Date().toISOString(),
-                quota,
-            };
+            updates.set(key, { auth: refreshedAuth, quota });
         } catch (error) {
-            vault.kiro.limits[key] = { fetchedAt: new Date().toISOString(), quota: cleanLimitError(error) };
+            updates.set(key, { auth: refreshedAuth, quota: cleanLimitError(error) });
         }
-        changed = true;
     }
 
-    return changed;
+    return updates;
 };
 
 export const saveKiro = async (key: string) => {
@@ -333,8 +332,33 @@ export const kiroState = async (options: { refreshLimitKey?: string; refreshLimi
     await syncActiveKiro();
     const activeAuth = parseAuth(await liveAuth().catch(() => ''));
     const refreshLimitKey = options.refreshLimitKey ? assertAccountKey(options.refreshLimitKey) : undefined;
+    const snapshot = await readVault();
+    const updates = await fetchKiroLimitUpdates(
+        snapshot,
+        options.refreshLimits === true,
+        refreshLimitKey,
+        activeAuth,
+    );
     const vault = await updateVault(async (current) => {
-        const changed = await updateKiroLimits(current, options.refreshLimits === true, refreshLimitKey, activeAuth);
+        if (refreshLimitKey && !current.kiro.data[refreshLimitKey]) {
+            throw publicError(404, `No Kiro auth named ${refreshLimitKey}`);
+        }
+        let changed = false;
+        for (const [key, update] of updates) {
+            const snap = current.kiro.data[key];
+            if (!snap) {
+                continue;
+            }
+            if (update.auth) {
+                snap.auth = update.auth;
+                snap.updatedAt = new Date().toISOString();
+            }
+            current.kiro.limits[key] = {
+                fetchedAt: new Date().toISOString(),
+                quota: update.quota,
+            };
+            changed = true;
+        }
         return { result: current, write: changed };
     });
     const matchingKey = Object.entries(vault.kiro.data).find(([, snap]) =>

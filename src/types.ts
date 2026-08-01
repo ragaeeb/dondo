@@ -51,6 +51,14 @@ export type CodexSnapshot = {
 
 export type CodexVault = VaultSection<CodexSnapshot>;
 
+export type ClineSnapshot = {
+    secrets: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type ClineVault = VaultSection<ClineSnapshot>;
+
 export type MinimaxSnapshot = {
     config: string;
     createdAt: string;
@@ -71,6 +79,7 @@ export type KiroVault = VaultSection<KiroSnapshot>;
 
 export type AppVault = {
     antigravity: PlatformVault;
+    cline: ClineVault;
     codex: CodexVault;
     kiro: KiroVault;
     minimax: MinimaxVault;
