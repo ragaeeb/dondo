@@ -22,6 +22,9 @@ export type ModelLimit = {
     percentage: number;
     resetTime: string;
     displayName: string;
+    detail?: string;
+    used?: number;
+    limit?: number;
 };
 
 export type LimitResult =
@@ -48,6 +51,14 @@ export type CodexSnapshot = {
 
 export type CodexVault = VaultSection<CodexSnapshot>;
 
+export type ClineSnapshot = {
+    secrets: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type ClineVault = VaultSection<ClineSnapshot>;
+
 export type MinimaxSnapshot = {
     config: string;
     createdAt: string;
@@ -56,8 +67,20 @@ export type MinimaxSnapshot = {
 
 export type MinimaxVault = VaultSection<MinimaxSnapshot>;
 
+export type KiroSnapshot = {
+    auth: string;
+    clientRegistration?: string;
+    createdAt: string;
+    profile?: string;
+    updatedAt: string;
+};
+
+export type KiroVault = VaultSection<KiroSnapshot>;
+
 export type AppVault = {
     antigravity: PlatformVault;
+    cline: ClineVault;
     codex: CodexVault;
+    kiro: KiroVault;
     minimax: MinimaxVault;
 };

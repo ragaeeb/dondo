@@ -104,6 +104,18 @@ export const loadCodex = async (key: string) => {
     await writePrivateFile(CODEX_AUTH_PATH, snap.auth);
 };
 
+export const deleteCodex = async (key: string) => {
+    const safeKey = assertAccountKey(key);
+    await updateVault(async (vault) => {
+        if (!vault.codex.data[safeKey]) {
+            throw publicError(404, `No Codex auth named ${safeKey}`);
+        }
+        delete vault.codex.data[safeKey];
+        delete vault.codex.limits[safeKey];
+        return { result: undefined };
+    });
+};
+
 export const codexState = async (options: { refreshLimitKey?: string; refreshLimits?: boolean } = {}) => {
     const refreshLimitKey = options.refreshLimitKey ? assertAccountKey(options.refreshLimitKey) : undefined;
     const vault = await updateVault(async (current) => {

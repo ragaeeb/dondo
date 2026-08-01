@@ -89,6 +89,7 @@ form,
 }
 
 .tabs {
+    flex-wrap: wrap;
     margin-bottom: 16px;
 }
 
@@ -106,6 +107,11 @@ button.primary {
     border-color: #111827;
     background: #111827;
     color: #fff;
+}
+
+button.danger {
+    border-color: #dc2626;
+    color: #b91c1c;
 }
 
 .toolbar {

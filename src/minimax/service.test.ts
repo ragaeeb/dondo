@@ -9,7 +9,9 @@ const runMiniMaxScript = async (env: Record<string, string>) => {
         const configPath = process.env.MINIMAX_CONFIG_PATH;
         const vaultPath = process.env.DONDO_VAULT;
         await saveMinimax('saved');
-        await Bun.write(configPath, JSON.stringify({ user: { userID: 'other' }, tokens: { accessToken: 'dummy-other' } }));
+        const savedToken = 'header.' + Buffer.from(JSON.stringify({ user: { id: 'saved-user' } })).toString('base64url') + '.saved';
+        const liveToken = 'header.' + Buffer.from(JSON.stringify({ user: { id: 'saved-user' } })).toString('base64url') + '.live';
+        await Bun.write(configPath, JSON.stringify({ user: { userID: 'other' }, tokens: { accessToken: liveToken } }));
         const before = await minimaxState();
         await loadMinimax('saved');
         const after = await minimaxState();
@@ -21,8 +23,9 @@ const runMiniMaxScript = async (env: Record<string, string>) => {
             loadedUserID: loadedConfig.user?.userID ?? '',
             quotaOk: after.entries[0]?.quota?.ok ?? null,
             limitUpdatedAt: after.entries[0]?.limitUpdatedAt ?? '',
-            resetTime: after.entries[0]?.quota?.ok ? after.entries[0].quota.models['minimax-loaded-at']?.resetTime ?? '' : '',
-            vaultHasPlainToken: vaultText.includes('dummy-token'),
+            fiveHourRemaining: after.entries[0]?.quota?.ok ? after.entries[0].quota.models['minimax-5-hour']?.percentage ?? null : null,
+            weeklyRemaining: after.entries[0]?.quota?.ok ? after.entries[0].quota.models['minimax-weekly']?.percentage ?? null : null,
+            vaultHasPlainToken: vaultText.includes(savedToken),
         }));
     `;
     const proc = Bun.spawn([process.execPath, '--eval', script], {
@@ -42,34 +45,76 @@ const runMiniMaxScript = async (env: Record<string, string>) => {
         limitUpdatedAt: string;
         loadedUserID: string;
         quotaOk: boolean;
-        resetTime: string;
+        fiveHourRemaining: number | null;
+        weeklyRemaining: number | null;
         vaultHasPlainToken: boolean;
     };
 };
 
-it('should save and load MiniMax configs with mocked load-time limits', async () => {
+it('should save and load MiniMax configs with MiniMax Code quota limits', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dondo-minimax-test-'));
     const configPath = join(dir, 'minimax-agent-config.json');
     const vaultPath = join(dir, 'vault.json');
+    const server = Bun.serve({
+        fetch: (request) => {
+            const pathname = new URL(request.url).pathname;
+            if (pathname.endsWith('/v1/api/user/info')) {
+                return Response.json({ data: { userInfo: { realUserID: 'saved-user' } } });
+            }
+            if (pathname.endsWith('/matrix/api/v1/user/get_user_extra_info')) {
+                return Response.json({
+                    base_resp: { status_code: 0, status_msg: 'success' },
+                    workspaces: [{ has_token_plan: true, opcredit_balance: 0, selected: true }],
+                });
+            }
+            if (pathname.endsWith('/v1/api/openplatform/coding_plan/remains')) {
+                return Response.json({
+                    model_remains: [
+                        {
+                            current_interval_remaining_percent: 48.4,
+                            current_weekly_remaining_percent: 75,
+                            end_time: 1_800_000_000,
+                            interval_boost_permille: 500,
+                            weekly_boost_permille: 1_000,
+                            weekly_end_time: 1_800_400_000,
+                        },
+                    ],
+                });
+            }
+            return new Response('Not found', { status: 404 });
+        },
+        port: 0,
+    });
     try {
         await Bun.write(
             configPath,
-            JSON.stringify({ tokens: { accessToken: 'dummy-token' }, user: { userID: 'saved-user' } }),
+            JSON.stringify({
+                tokens: {
+                    accessToken:
+                        'header.' + Buffer.from(JSON.stringify({ user: { id: 'saved-user' } })).toString('base64url') + '.saved',
+                },
+                user: { userID: 'saved-user' },
+            }),
         );
 
         const result = await runMiniMaxScript({
             DONDO_VAULT: vaultPath,
             MINIMAX_CONFIG_PATH: configPath,
+            MINIMAX_AGENT_URL: `http://127.0.0.1:${server.port}`,
+            MINIMAX_UUID: '00000000-0000-4000-8000-000000000000',
+            MINIMAX_PLATFORM_URL: `http://127.0.0.1:${server.port}`,
         });
 
-        expect(result.activeBeforeLoad).toBe(false);
+        expect(result.activeBeforeLoad).toBe(true);
         expect(result.activeAfterLoad).toBe(true);
         expect(result.loadedUserID).toBe('saved-user');
         expect(result.quotaOk).toBe(true);
         expect(result.limitUpdatedAt).toBeTruthy();
-        expect(result.resetTime).toBe(result.limitUpdatedAt);
+        expect(result.fiveHourRemaining).toBe(48);
+        expect(result.weeklyRemaining).toBe(75);
         expect(result.vaultHasPlainToken).toBe(false);
     } finally {
+        server.stop(true);
         await rm(dir, { force: true, recursive: true });
     }
 });

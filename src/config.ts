@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const env = (key: string) => {
     const value = process.env[key]?.trim();
@@ -30,9 +30,47 @@ export const PORT = parsePort();
 export const DATA_DIR = env('DONDO_DATA_DIR') ?? appDataDir();
 export const VAULT_PATH = env('DONDO_VAULT') ?? env('ANTIGRAVITY_VAULT') ?? join(DATA_DIR, 'vault.json');
 export const CODEX_AUTH_PATH = env('CODEX_AUTH_PATH') ?? join(homedir(), '.codex', 'auth.json');
+export const CLINE_SECRETS_PATH =
+    env('CLINE_SECRETS_PATH') ?? join(homedir(), '.cline', 'data', 'secrets.json');
+export const KIRO_AUTH_PATH = env('KIRO_AUTH_PATH') ?? join(homedir(), '.aws', 'sso', 'cache', 'kiro-auth-token.json');
+export const KIRO_PROFILE_PATH =
+    env('KIRO_PROFILE_PATH') ??
+    (process.platform === 'darwin'
+        ? join(
+              homedir(),
+              'Library',
+              'Application Support',
+              'Kiro',
+              'User',
+              'globalStorage',
+              'kiro.kiroagent',
+              'profile.json',
+          )
+        : process.platform === 'win32'
+          ? join(
+                env('APPDATA') ?? join(homedir(), 'AppData', 'Roaming'),
+                'Kiro',
+                'User',
+                'globalStorage',
+                'kiro.kiroagent',
+                'profile.json',
+            )
+          : join(homedir(), '.config', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent', 'profile.json'));
+export const KIRO_PROCESS_NAME =
+    env('KIRO_PROCESS_NAME') ??
+    (process.platform === 'darwin' ? 'Kiro' : process.platform === 'win32' ? 'Kiro.exe' : 'kiro');
+export const KIRO_AUTH_REFRESH_URL =
+    env('KIRO_AUTH_REFRESH_URL') ?? 'https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken';
+export const KIRO_USAGE_URL = env('KIRO_USAGE_URL');
+export const KIRO_USER_AGENT = env('KIRO_USER_AGENT') ?? 'KiroIDE-0.0.0-dondo';
 export const MINIMAX_CONFIG_PATH =
     env('MINIMAX_CONFIG_PATH') ??
     join(homedir(), 'Library', 'Application Support', 'MiniMax Agent', 'minimax-agent-config.json');
+export const MINIMAX_PLATFORM_URL = env('MINIMAX_PLATFORM_URL') ?? 'https://platform.minimax.io';
+export const MINIMAX_AGENT_URL = env('MINIMAX_AGENT_URL') ?? 'https://agent.minimax.io';
+export const MINIMAX_UUID = env('MINIMAX_UUID');
+export const MINIMAX_LOCAL_STORAGE_PATH =
+    env('MINIMAX_LOCAL_STORAGE_PATH') ?? join(dirname(MINIMAX_CONFIG_PATH), 'Local Storage', 'leveldb');
 
 export const VAULT_KEY_SERVICE = 'dondo';
 export const VAULT_KEY_ACCOUNT = 'vault-key';
