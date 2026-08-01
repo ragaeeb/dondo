@@ -22,6 +22,9 @@ export type ModelLimit = {
     percentage: number;
     resetTime: string;
     displayName: string;
+    detail?: string;
+    used?: number;
+    limit?: number;
 };
 
 export type LimitResult =

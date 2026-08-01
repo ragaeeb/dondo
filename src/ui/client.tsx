@@ -149,11 +149,15 @@ const ModelCard = ({ model }: { model: [string, ModelLimit] }) => {
                 <b>{data.displayName || name}</b>
             </div>
             <div class="muted small">{name}</div>
-            <div class="bar">
-                <div class="fill" style={{ width: `${width}%` }} />
-            </div>
+            {!data.detail ? (
+                <div class="bar">
+                    <div class="fill" style={{ width: `${width}%` }} />
+                </div>
+            ) : null}
             <div class="small">
-                {data.percentage}% left{data.resetTime ? ` · resets ${formatDate(data.resetTime)}` : ''}
+                {data.used !== undefined && data.limit !== undefined ? `${data.used} / ${data.limit} used · ` : ''}
+                {data.detail ?? `${data.percentage}% left`}
+                {data.resetTime ? ` · resets ${formatDate(data.resetTime)}` : ''}
             </div>
         </div>
     );
@@ -553,9 +557,14 @@ const KiroPanel = ({ active }: { active: boolean }) => {
     const [pendingKey, setPendingKey] = useState('');
     const [exporting, setExporting] = useState(false);
 
-    const refresh = async () => {
-        setStatus('Loading accounts...');
-        setState(await api<KiroState>('/api/kiro/state'));
+    const refresh = async (forceLimits = false) => {
+        setStatus(forceLimits ? 'Refreshing limits...' : 'Loading accounts...');
+        setState(
+            await api<KiroState>(
+                forceLimits ? '/api/kiro/limits/refresh' : '/api/kiro/state',
+                forceLimits ? {} : undefined,
+            ),
+        );
         setLoaded(true);
         setStatus('');
     };
@@ -588,6 +597,19 @@ const KiroPanel = ({ active }: { active: boolean }) => {
             await api('/api/kiro/load', { key: entryKey });
             await refresh();
             setStatus(`Loaded ${entryKey}. Reopen Kiro to use it.`);
+        } catch (error) {
+            setStatus(error instanceof Error ? error.message : String(error));
+        } finally {
+            setPendingKey('');
+        }
+    };
+
+    const refreshOne = async (entryKey: string) => {
+        setStatus(`Refreshing ${entryKey}...`);
+        setPendingKey(entryKey);
+        try {
+            setState(await api<KiroState>('/api/kiro/limits/refresh', { key: entryKey }));
+            setStatus(`Refreshed ${entryKey}`);
         } catch (error) {
             setStatus(error instanceof Error ? error.message : String(error));
         } finally {
@@ -638,6 +660,9 @@ const KiroPanel = ({ active }: { active: boolean }) => {
                     >
                         Export
                     </button>
+                    <button type="button" onClick={() => refresh(true).catch((error) => setStatus(error.message))}>
+                        Refresh limits
+                    </button>
                 </div>
             </div>
             <section class="panel">
@@ -667,10 +692,17 @@ const KiroPanel = ({ active }: { active: boolean }) => {
                             entry={entry}
                             pending={pendingKey === entry.key}
                             onDelete={(entryKey) =>
-                                deleteSavedAccount('kiro', 'Kiro', entryKey, refresh, setStatus, setPendingKey)
+                                deleteSavedAccount(
+                                    'kiro',
+                                    'Kiro',
+                                    entryKey,
+                                    () => refresh(false),
+                                    setStatus,
+                                    setPendingKey,
+                                )
                             }
                             onLoad={load}
-                            showLimits={false}
+                            onRefresh={refreshOne}
                         />
                     ))
                 ) : (

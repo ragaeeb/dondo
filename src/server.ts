@@ -300,6 +300,13 @@ const routes = new Map<string, Route>([
     ],
     ['GET /api/kiro/state', { handler: async () => json(await kiroState()) }],
     [
+        'POST /api/kiro/limits/refresh',
+        {
+            handler: async (req) =>
+                json(await kiroState({ refreshLimitKey: await optionalKey(req), refreshLimits: true })),
+        },
+    ],
+    [
         'POST /api/kiro/export',
         {
             handler: async (req, dependencies) => {

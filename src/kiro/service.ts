@@ -8,10 +8,11 @@ import {
     KIRO_USER_AGENT,
     VAULT_PATH,
 } from '../config.ts';
-import { assertAccountKey, publicError } from '../errors.ts';
+import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { writePrivateFile } from '../storage/file.ts';
-import { readVault, updateVault } from '../storage/vault.ts';
-import type { KiroSnapshot } from '../types.ts';
+import { updateVault } from '../storage/vault.ts';
+import type { AppVault, KiroSnapshot } from '../types.ts';
+import { fetchKiroLimits } from './usage.ts';
 
 type KiroAuth = {
     accessToken?: string;
@@ -194,6 +195,55 @@ const syncActiveKiro = async () => {
     });
 };
 
+const updateKiroLimits = async (
+    vault: AppVault,
+    force: boolean,
+    targetKey: string | undefined,
+    activeAuth: KiroAuth | null,
+) => {
+    let changed = false;
+    if (targetKey && !vault.kiro.data[targetKey]) {
+        throw publicError(404, `No Kiro auth named ${targetKey}`);
+    }
+
+    for (const [key, snap] of Object.entries(vault.kiro.data)) {
+        if ((targetKey && key !== targetKey) || (!force && vault.kiro.limits[key])) {
+            continue;
+        }
+        const auth = parseAuth(snap.auth);
+        if (!auth) {
+            vault.kiro.limits[key] = {
+                fetchedAt: new Date().toISOString(),
+                quota: { error: 'Saved Kiro auth JSON is invalid', ok: false },
+            };
+            changed = true;
+            continue;
+        }
+        try {
+            let quota = await fetchKiroLimits(auth);
+            if (
+                !quota.ok &&
+                quota.error === 'Saved Kiro access token is expired or rejected' &&
+                !isSameAuth(activeAuth, auth)
+            ) {
+                const refreshed = await refreshSocialAuth(auth, key);
+                snap.auth = JSON.stringify(refreshed, null, 2);
+                snap.updatedAt = new Date().toISOString();
+                quota = await fetchKiroLimits(refreshed);
+            }
+            vault.kiro.limits[key] = {
+                fetchedAt: new Date().toISOString(),
+                quota,
+            };
+        } catch (error) {
+            vault.kiro.limits[key] = { fetchedAt: new Date().toISOString(), quota: cleanLimitError(error) };
+        }
+        changed = true;
+    }
+
+    return changed;
+};
+
 export const saveKiro = async (key: string) => {
     const safeKey = assertAccountKey(key);
     const auth = await readValidLiveAuth();
@@ -213,6 +263,7 @@ export const saveKiro = async (key: string) => {
             profile,
             updatedAt: now,
         };
+        delete vault.kiro.limits[safeKey];
         return { result: undefined };
     });
     activeKiroKey = safeKey;
@@ -278,10 +329,14 @@ export const deleteKiro = async (key: string) => {
     });
 };
 
-export const kiroState = async () => {
+export const kiroState = async (options: { refreshLimitKey?: string; refreshLimits?: boolean } = {}) => {
     await syncActiveKiro();
-    const vault = await readVault();
     const activeAuth = parseAuth(await liveAuth().catch(() => ''));
+    const refreshLimitKey = options.refreshLimitKey ? assertAccountKey(options.refreshLimitKey) : undefined;
+    const vault = await updateVault(async (current) => {
+        const changed = await updateKiroLimits(current, options.refreshLimits === true, refreshLimitKey, activeAuth);
+        return { result: current, write: changed };
+    });
     const matchingKey = Object.entries(vault.kiro.data).find(([, snap]) =>
         isSameAuth(activeAuth, parseAuth(snap.auth)),
     )?.[0];
@@ -297,8 +352,8 @@ export const kiroState = async () => {
             .map(([key, snap]: [string, KiroSnapshot]) => ({
                 active: isSameAuth(activeAuth, parseAuth(snap.auth)),
                 key,
-                limitUpdatedAt: '',
-                quota: null,
+                limitUpdatedAt: vault.kiro.limits[key]?.fetchedAt ?? '',
+                quota: vault.kiro.limits[key]?.quota ?? null,
                 updatedAt: snap.updatedAt,
             }))
             .sort((a, b) => {

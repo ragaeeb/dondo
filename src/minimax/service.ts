@@ -1,11 +1,11 @@
 import { MINIMAX_CONFIG_PATH, VAULT_PATH } from '../config.ts';
-import { assertAccountKey, publicError } from '../errors.ts';
+import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { writePrivateFile } from '../storage/file.ts';
 import { readVault, updateVault } from '../storage/vault.ts';
-import type { AppVault, LimitResult, MinimaxSnapshot } from '../types.ts';
+import type { AppVault, MinimaxSnapshot } from '../types.ts';
+import { fetchMiniMaxLimits, type MiniMaxConfig } from './usage.ts';
 
-type MinimaxConfig = {
-    tokens?: { accessToken?: string };
+type StoredMinimaxConfig = MiniMaxConfig & {
     user?: {
         email?: string;
         realUserID?: string;
@@ -21,9 +21,9 @@ const liveConfig = async () => {
     return (await file.exists()) ? await file.text() : '';
 };
 
-const parseConfig = (config: string) => {
+const parseConfig = (config: string): StoredMinimaxConfig => {
     try {
-        return JSON.parse(config) as MinimaxConfig;
+        return JSON.parse(config) as StoredMinimaxConfig;
     } catch {
         return {};
     }
@@ -31,7 +31,7 @@ const parseConfig = (config: string) => {
 
 const stringValue = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
 
-const identity = (config: MinimaxConfig) => {
+const identity = (config: StoredMinimaxConfig) => {
     return (
         stringValue(config.user?.realUserID) ??
         stringValue(config.user?.userID) ??
@@ -44,40 +44,31 @@ const identity = (config: MinimaxConfig) => {
     );
 };
 
-const isSameConfig = (a: MinimaxConfig, b: MinimaxConfig) => {
+const isSameConfig = (a: StoredMinimaxConfig, b: StoredMinimaxConfig) => {
     const aIdentity = identity(a);
     const bIdentity = identity(b);
     return Boolean(aIdentity && bIdentity && aIdentity === bIdentity);
 };
 
-const mockLimit = (loadedAt: string): LimitResult => ({
-    expires: loadedAt,
-    models: {
-        'minimax-loaded-at': {
-            displayName: 'Loaded at',
-            percentage: 100,
-            resetTime: loadedAt,
-        },
-    },
-    ok: true,
-    tier: 'MiniMax',
-});
+const hasLegacyPlaceholderLimit = (vault: AppVault, key: string) => {
+    const quota = vault.minimax.limits[key]?.quota;
+    return quota?.ok && 'minimax-loaded-at' in quota.models;
+};
 
-const setMockLimits = async (vault: AppVault, force: boolean, targetKey?: string) => {
+const updateMiniMaxLimits = async (vault: AppVault, force: boolean, targetKey?: string) => {
     let changed = false;
     if (targetKey && !vault.minimax.data[targetKey]) {
         throw publicError(404, `No MiniMax config named ${targetKey}`);
     }
-    if (!force) {
-        return false;
-    }
-
-    for (const key of Object.keys(vault.minimax.data)) {
-        if (targetKey && key !== targetKey) {
+    for (const [key, snap] of Object.entries(vault.minimax.data)) {
+        if ((targetKey && key !== targetKey) || (!force && vault.minimax.limits[key] && !hasLegacyPlaceholderLimit(vault, key))) {
             continue;
         }
-        const loadedAt = new Date().toISOString();
-        vault.minimax.limits[key] = { fetchedAt: loadedAt, quota: mockLimit(loadedAt) };
+        try {
+            vault.minimax.limits[key] = { fetchedAt: new Date().toISOString(), quota: await fetchMiniMaxLimits(parseConfig(snap.config)) };
+        } catch (error) {
+            vault.minimax.limits[key] = { fetchedAt: new Date().toISOString(), quota: cleanLimitError(error) };
+        }
         changed = true;
     }
 
@@ -122,8 +113,7 @@ export const loadMinimax = async (key: string) => {
 
     await writePrivateFile(MINIMAX_CONFIG_PATH, snap.config);
     await updateVault(async (vault) => {
-        const loadedAt = new Date().toISOString();
-        vault.minimax.limits[safeKey] = { fetchedAt: loadedAt, quota: mockLimit(loadedAt) };
+        delete vault.minimax.limits[safeKey];
         return { result: undefined };
     });
 };
@@ -143,7 +133,7 @@ export const deleteMinimax = async (key: string) => {
 export const minimaxState = async (options: { refreshLimitKey?: string; refreshLimits?: boolean } = {}) => {
     const refreshLimitKey = options.refreshLimitKey ? assertAccountKey(options.refreshLimitKey) : undefined;
     const vault = await updateVault(async (current) => {
-        const changed = await setMockLimits(current, options.refreshLimits === true, refreshLimitKey);
+        const changed = await updateMiniMaxLimits(current, options.refreshLimits === true, refreshLimitKey);
         return { result: current, write: changed };
     });
     const activeConfig = parseConfig(await liveConfig().catch(() => ''));

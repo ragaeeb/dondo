@@ -109,9 +109,12 @@ without calling Kiro's remote logout endpoint.
 The Kiro account rows intentionally do not offer `Sync current`, because that action cannot verify that the live
 account matches the row label.
 
-`kiro.limits` is reserved for future Kiro usage data and is currently empty.
+`kiro.limits` stores cached Kiro usage data. Dondo fetches missing limits when the Kiro tab opens and refreshes every
+saved account only when `Refresh limits` is selected.
 
 `minimax.data` stores encrypted snapshots of `~/Library/Application Support/MiniMax Agent/minimax-agent-config.json`. Loading a saved MiniMax account writes that snapshot back to the same path with `0600` permissions.
+
+`minimax.limits` caches the 5-hour and weekly MiniMax Code quotas fetched from its current coding-plan endpoint. Dondo fetches missing limits when the MiniMax tab opens and refreshes every saved account only when `Refresh limits` is selected.
 
 `minimax.limits` stores mocked MiniMax limit data. The current implementation records the load or refresh time because the MiniMax rate-limit endpoint is not yet known.
 
@@ -149,6 +152,7 @@ KIRO_AUTH_PATH=~/.aws/sso/cache/kiro-auth-token.json
 KIRO_PROFILE_PATH="~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/profile.json"
 KIRO_AUTH_REFRESH_URL=https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken
 MINIMAX_CONFIG_PATH=~/Library/Application Support/MiniMax Agent/minimax-agent-config.json
+MINIMAX_PLATFORM_URL=https://platform.minimax.io
 ```
 
 `DONDO_PORT` takes precedence over `PORT`; both set the preferred starting port, and Dondo uses the next available port if that port is busy. `ANTIGRAVITY_KEYCHAIN` is passed as the keychain argument to macOS `security` commands, for example `login.keychain-db` or an absolute keychain path.
@@ -174,6 +178,7 @@ require `POST` and the `X-Dondo-Export: 1` header.
 - `POST /api/codex/load` with `{ "key": "label" }`
 - `POST /api/codex/delete` with `{ "key": "label" }`
 - `GET /api/kiro/state`
+- `POST /api/kiro/limits/refresh` with optional `{ "key": "label" }`
 - `POST /api/kiro/export`
 - `POST /api/kiro/save` with `{ "key": "label" }`
 - `POST /api/kiro/load` with `{ "key": "label" }`

@@ -59,10 +59,12 @@ export const KIRO_PROCESS_NAME =
     (process.platform === 'darwin' ? 'Kiro' : process.platform === 'win32' ? 'Kiro.exe' : 'kiro');
 export const KIRO_AUTH_REFRESH_URL =
     env('KIRO_AUTH_REFRESH_URL') ?? 'https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken';
+export const KIRO_USAGE_URL = env('KIRO_USAGE_URL');
 export const KIRO_USER_AGENT = env('KIRO_USER_AGENT') ?? 'KiroIDE-0.0.0-dondo';
 export const MINIMAX_CONFIG_PATH =
     env('MINIMAX_CONFIG_PATH') ??
     join(homedir(), 'Library', 'Application Support', 'MiniMax Agent', 'minimax-agent-config.json');
+export const MINIMAX_PLATFORM_URL = env('MINIMAX_PLATFORM_URL') ?? 'https://platform.minimax.io';
 
 export const VAULT_KEY_SERVICE = 'dondo';
 export const VAULT_KEY_ACCOUNT = 'vault-key';

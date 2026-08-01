@@ -43,6 +43,7 @@ const runKiroScript = async (env: Record<string, string>) => {
             cleared: !(await Bun.file(authPath).exists()),
             clearedProfile,
             deleted: afterDelete.entries.length === 0,
+            quotaLeft: before.entries[0]?.quota?.ok ? before.entries[0].quota.models.credit?.percentage ?? -1 : -1,
             loadedProfileRestored: loadedProfile.id === 'dummy-profile',
             loadedProfileArn: loadedAuth.profileArn ?? '',
             loadedRefreshWasRotated: loadedAuth.refreshToken === 'dummy-refreshed',
@@ -70,6 +71,7 @@ const runKiroScript = async (env: Record<string, string>) => {
         loadedProfileArn: string;
         loadedProfileRestored: boolean;
         loadedRefreshWasRotated: boolean;
+        quotaLeft: number;
         vaultHasPlainToken: boolean;
     };
 };
@@ -81,6 +83,13 @@ it('should save and load Kiro auth with encrypted vault storage', async () => {
     let refreshRequests = 0;
     const refreshServer = Bun.serve({
         fetch: async (request) => {
+            if (new URL(request.url).pathname === '/getUsageLimits') {
+                return Response.json({
+                    usageBreakdownList: [
+                        { currentUsageWithPrecision: 1, resourceType: 'CREDIT', usageLimitWithPrecision: 50 },
+                    ],
+                });
+            }
             const body = (await request.json()) as { refreshToken?: string };
             refreshRequests += 1;
             expect(body.refreshToken).toBe('dummy-refresh');
@@ -112,6 +121,7 @@ it('should save and load Kiro auth with encrypted vault storage', async () => {
             KIRO_AUTH_REFRESH_URL: `http://127.0.0.1:${refreshServer.port}/refreshToken`,
             KIRO_PROCESS_NAME: 'dondo-kiro-test-not-running',
             KIRO_PROFILE_PATH: join(dir, 'profile.json'),
+            KIRO_USAGE_URL: `http://127.0.0.1:${refreshServer.port}/getUsageLimits`,
         });
 
         expect(result.activeBeforeLoad).toBe(false);
@@ -123,6 +133,7 @@ it('should save and load Kiro auth with encrypted vault storage', async () => {
         expect(result.loadedProfileArn).toBe('arn:saved');
         expect(result.loadedProfileRestored).toBe(true);
         expect(result.loadedRefreshWasRotated).toBe(true);
+        expect(result.quotaLeft).toBe(98);
         expect(refreshRequests).toBe(1);
         expect(result.vaultHasPlainToken).toBe(false);
         await expect(stat(authPath)).rejects.toThrow();
