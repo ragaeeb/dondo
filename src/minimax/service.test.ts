@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 const runMiniMaxScript = async (env: Record<string, string>) => {
     const script = `
-        const { loadMinimax, minimaxState, saveMinimax } = await import('./src/minimax/service.ts');
+        const { checkInMinimax, loadMinimax, minimaxState, saveMinimax } = await import('./src/minimax/service.ts');
         const configPath = process.env.MINIMAX_CONFIG_PATH;
         const vaultPath = process.env.DONDO_VAULT;
         await saveMinimax('saved');
@@ -15,6 +15,7 @@ const runMiniMaxScript = async (env: Record<string, string>) => {
         const before = await minimaxState();
         await loadMinimax('saved');
         const after = await minimaxState();
+        const checkIn = await checkInMinimax();
         const loadedConfig = JSON.parse(await Bun.file(configPath).text());
         const vaultText = await Bun.file(vaultPath).text();
         console.log(JSON.stringify({
@@ -25,6 +26,9 @@ const runMiniMaxScript = async (env: Record<string, string>) => {
             limitUpdatedAt: after.entries[0]?.limitUpdatedAt ?? '',
             fiveHourRemaining: after.entries[0]?.quota?.ok ? after.entries[0].quota.models['minimax-5-hour']?.percentage ?? null : null,
             weeklyRemaining: after.entries[0]?.quota?.ok ? after.entries[0].quota.models['minimax-weekly']?.percentage ?? null : null,
+            creditDetail: after.entries[0]?.quota?.ok ? after.entries[0].quota.models['minimax-credits']?.detail ?? null : null,
+            checkInClaimed: checkIn.claimed,
+            checkInPoints: checkIn.points,
             vaultHasPlainToken: vaultText.includes(savedToken),
         }));
     `;
@@ -47,6 +51,9 @@ const runMiniMaxScript = async (env: Record<string, string>) => {
         quotaOk: boolean;
         fiveHourRemaining: number | null;
         weeklyRemaining: number | null;
+        creditDetail: string | null;
+        checkInClaimed: boolean;
+        checkInPoints: number;
         vaultHasPlainToken: boolean;
     };
 };
@@ -65,6 +72,32 @@ it('should save and load MiniMax configs with MiniMax Code quota limits', async 
                 return Response.json({
                     base_resp: { status_code: 0, status_msg: 'success' },
                     workspaces: [{ has_token_plan: true, opcredit_balance: 0, selected: true }],
+                });
+            }
+            if (pathname.endsWith('/matrix/api/v1/commerce/get_membership_info')) {
+                return Response.json({
+                    base_resp: { status_code: 0, status_msg: 'success' },
+                    op_credit_summary: { total_remaining_amount: '312.106' },
+                });
+            }
+            if (pathname.endsWith('/minimax-cloud/api/v1/signin/status')) {
+                return Response.json({
+                    base_resp: { status_code: 0, status_msg: 'ok' },
+                    data: {
+                        days: [{ day_no: 1, is_today: true, points: 400, status: 2 }],
+                        scene: 2,
+                    },
+                });
+            }
+            if (pathname.endsWith('/minimax-cloud/api/v1/signin/claim')) {
+                return Response.json({
+                    base_resp: { status_code: 0, status_msg: 'ok' },
+                    data: {
+                        claim_result: 1,
+                        day_no: 1,
+                        panel: { days: [{ day_no: 1, is_today: true, points: 400, status: 3 }], scene: 2 },
+                        points: 400,
+                    },
                 });
             }
             if (pathname.endsWith('/v1/api/openplatform/coding_plan/remains')) {
@@ -112,6 +145,9 @@ it('should save and load MiniMax configs with MiniMax Code quota limits', async 
         expect(result.limitUpdatedAt).toBeTruthy();
         expect(result.fiveHourRemaining).toBe(48);
         expect(result.weeklyRemaining).toBe(75);
+        expect(result.creditDetail).toBe('Credit: 312');
+        expect(result.checkInClaimed).toBe(true);
+        expect(result.checkInPoints).toBe(400);
         expect(result.vaultHasPlainToken).toBe(false);
     } finally {
         server.stop(true);

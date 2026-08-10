@@ -12,7 +12,7 @@ import { codexState, deleteCodex, loadCodex, saveCodex } from './codex/service.t
 import { HOST, PORT } from './config.ts';
 import { errorMessage, errorStatus, publicError } from './errors.ts';
 import { clearKiro, deleteKiro, kiroState, loadKiro, saveKiro } from './kiro/service.ts';
-import { deleteMinimax, loadMinimax, minimaxState, saveMinimax } from './minimax/service.ts';
+import { checkInMinimax, deleteMinimax, loadMinimax, minimaxState, saveMinimax } from './minimax/service.ts';
 import { type ExportPlatform, exportPlatformWallet } from './storage/export.ts';
 import { renderHtml } from './ui/html.ts';
 
@@ -404,6 +404,12 @@ const routes = new Map<string, Route>([
         {
             handler: async (req) =>
                 json(await minimaxState({ refreshLimitKey: await optionalKey(req), refreshLimits: true })),
+        },
+    ],
+    [
+        'POST /api/minimax/check-in',
+        {
+            handler: async (req) => json(await checkInMinimax(await optionalKey(req))),
         },
     ],
     [

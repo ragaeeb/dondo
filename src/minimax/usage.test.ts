@@ -97,7 +97,7 @@ it('treats MiniMax non-plan access as valid without inventing a numeric quota', 
     });
 });
 
-it('does not mistake the commerce credit balance for a free daily quota', () => {
+it('maps the commerce credit balance as a numeric credit limit', () => {
     expect(
         workspaceToLimitResult({
             creditBalance: 0,
@@ -106,9 +106,9 @@ it('does not mistake the commerce credit balance for a free daily quota', () => 
     ).toEqual({
         expires: '',
         models: {
-            'minimax-free-daily': {
-                detail: 'Token valid · MiniMax does not report a free daily quota',
-                displayName: 'Free daily quota',
+            'minimax-credits': {
+                detail: 'Credit: 0',
+                displayName: 'Credits',
                 percentage: 100,
                 resetTime: '',
             },

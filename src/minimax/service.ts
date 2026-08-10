@@ -3,7 +3,7 @@ import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { writePrivateFile } from '../storage/file.ts';
 import { readVault, updateVault } from '../storage/vault.ts';
 import type { AppVault, LimitCache, MinimaxSnapshot } from '../types.ts';
-import { fetchMiniMaxLimits, miniMaxTokenIdentity, type MiniMaxConfig } from './usage.ts';
+import { checkInMiniMax, fetchMiniMaxLimits, miniMaxTokenIdentity, type MiniMaxConfig } from './usage.ts';
 
 type StoredMinimaxConfig = MiniMaxConfig & {
     user?: {
@@ -57,8 +57,11 @@ const hasLegacyPlaceholderLimit = (vault: AppVault, key: string) => {
 
 const hasMislabelledFreeQuotaLimit = (vault: AppVault, key: string) => {
     const quota = vault.minimax.limits[key]?.quota;
-    const detail = quota?.ok ? quota.models['minimax-free-daily']?.detail : undefined;
-    return detail?.includes('free daily credit') ?? false;
+    if (!quota?.ok) {
+        return false;
+    }
+    const legacyModel = quota.models['minimax-free-daily'] ?? quota.models['minimax-free-access'];
+    return Boolean(legacyModel?.detail?.includes('free daily') || legacyModel?.detail?.includes('numeric allowance'));
 };
 
 const fetchMiniMaxLimitUpdates = async (vault: AppVault, force: boolean, targetKey?: string) => {
@@ -142,6 +145,43 @@ export const deleteMinimax = async (key: string) => {
         delete vault.minimax.limits[safeKey];
         return { result: undefined };
     });
+};
+
+export const checkInMinimax = async (key?: string) => {
+    const safeKey = key ? assertAccountKey(key) : undefined;
+    const vault = await readVault();
+    let config = '';
+    let savedKey = safeKey;
+
+    if (safeKey) {
+        const snapshot = vault.minimax.data[safeKey];
+        if (!snapshot) {
+            throw publicError(404, `No MiniMax config named ${safeKey}`);
+        }
+        config = snapshot.config;
+    } else {
+        config = await liveConfig();
+        const activeEntry = Object.entries(vault.minimax.data).find(([, snapshot]) =>
+            isSameConfig(parseConfig(config), parseConfig(snapshot.config)),
+        );
+        savedKey = activeEntry?.[0];
+        if (!config.trim() && savedKey) {
+            config = vault.minimax.data[savedKey]?.config ?? '';
+        }
+    }
+
+    if (!config.trim()) {
+        throw publicError(404, 'No live MiniMax session found. Sign into MiniMax, then save the account.');
+    }
+    const result = await checkInMiniMax(parseConfig(config));
+    const keyToInvalidate = savedKey;
+    if (result.claimed && keyToInvalidate) {
+        await updateVault(async (current) => {
+            delete current.minimax.limits[keyToInvalidate];
+            return { result: undefined };
+        });
+    }
+    return result;
 };
 
 export const minimaxState = async (options: { refreshLimitKey?: string; refreshLimits?: boolean } = {}) => {

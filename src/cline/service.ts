@@ -1,21 +1,18 @@
-import { CLINE_SECRETS_PATH, VAULT_PATH } from '../config.ts';
+import { CLINE_PROVIDERS_PATH, VAULT_PATH } from '../config.ts';
 import { assertAccountKey, publicError } from '../errors.ts';
 import { writePrivateFile } from '../storage/file.ts';
 import { readVault, updateVault } from '../storage/vault.ts';
 import type { ClineSnapshot } from '../types.ts';
 
-const CLINE_ACCOUNT_KEY = 'cline:clineAccountId';
-
 type ClineAccount = {
-    idToken?: string;
+    accessToken?: string;
+    accountId?: string;
+    email?: string;
+    id?: string;
     refreshToken?: string;
-    userInfo?: {
-        email?: string;
-        id?: string;
-    };
 };
 
-type ClineSecrets = Record<string, unknown>;
+type ClineProviderFile = Record<string, unknown>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -30,43 +27,58 @@ const parseJsonRecord = (text: string) => {
     }
 };
 
-const parseAccount = (secrets: ClineSecrets): ClineAccount | null => {
-    const raw = secrets[CLINE_ACCOUNT_KEY];
-    if (typeof raw !== 'string' || !raw.trim()) {
+const stringValue = (value: unknown) => (typeof value === 'string' && value.trim() ? value : undefined);
+
+const parseProviderAccount = (provider: unknown): ClineAccount | null => {
+    if (!isRecord(provider) || !isRecord(provider.settings) || !isRecord(provider.settings.auth)) {
         return null;
     }
-    const account = parseJsonRecord(raw);
-    return typeof account?.idToken === 'string' && account.idToken ? (account as ClineAccount) : null;
-};
-
-const parseSecrets = (text: string) => {
-    const secrets = parseJsonRecord(text);
-    if (!secrets) {
+    const providerName = stringValue(provider.settings.provider);
+    if (providerName && providerName !== 'cline') {
         return null;
     }
-    const account = parseAccount(secrets);
-    return account ? { account, secrets } : null;
+    const auth = provider.settings.auth;
+    const accessToken = stringValue(auth.accessToken);
+    if (!accessToken) {
+        return null;
+    }
+    const metadata = isRecord(auth.metadata) ? auth.metadata : {};
+    const userInfo = isRecord(metadata.userInfo) ? metadata.userInfo : {};
+    return {
+        accessToken,
+        accountId: stringValue(auth.accountId) ?? stringValue(metadata.accountId),
+        email: stringValue(metadata.email) ?? stringValue(userInfo.email),
+        id: stringValue(metadata.userId) ?? stringValue(userInfo.id),
+        refreshToken: stringValue(auth.refreshToken),
+    };
 };
 
-const liveSecrets = async () => {
-    const file = Bun.file(CLINE_SECRETS_PATH);
-    return (await file.exists()) ? await file.text() : '';
+const parseProviders = (text: string) => {
+    const providersFile = parseJsonRecord(text);
+    if (!providersFile || !isRecord(providersFile.providers)) {
+        return null;
+    }
+    const account = parseProviderAccount(providersFile.providers.cline);
+    return account ? { account, providers: providersFile as ClineProviderFile } : null;
 };
 
-const readValidLiveSecrets = async () => {
-    const file = Bun.file(CLINE_SECRETS_PATH);
-    if (!(await file.exists())) {
-        throw publicError(404, `No live Cline session found. Sign into Cline, then use Save current.`);
+const liveFile = async () => {
+    const file = Bun.file(CLINE_PROVIDERS_PATH);
+    return (await file.exists()) ? { path: CLINE_PROVIDERS_PATH, text: await file.text() } : null;
+};
+
+const readValidLiveFile = async () => {
+    const current = await liveFile();
+    if (!current) {
+        throw publicError(404, `No live Cline session found at ${CLINE_PROVIDERS_PATH}. Sign into Cline, then use Save current.`);
     }
-    const text = await file.text();
-    if (!text.trim()) {
-        throw publicError(400, `${CLINE_SECRETS_PATH} is empty`);
+    if (!current.text.trim()) {
+        throw publicError(400, `${CLINE_PROVIDERS_PATH} is empty`);
     }
-    const parsed = parseSecrets(text);
-    if (!parsed) {
-        throw publicError(400, `${CLINE_SECRETS_PATH} does not contain a valid Cline account token`);
+    if (!parseProviders(current.text)) {
+        throw publicError(400, `${CLINE_PROVIDERS_PATH} does not contain a valid Cline account token`);
     }
-    return text;
+    return current;
 };
 
 const jwtSubject = (token: string) => {
@@ -83,7 +95,13 @@ const jwtSubject = (token: string) => {
 };
 
 const identity = (account: ClineAccount) => {
-    return account.userInfo?.id || account.userInfo?.email || (account.idToken ? jwtSubject(account.idToken) : '') || '';
+    return (
+        account.accountId ||
+        account.id ||
+        account.email ||
+        (account.accessToken ? jwtSubject(account.accessToken) : '') ||
+        ''
+    );
 };
 
 const isSameAccount = (a: ClineAccount | null, b: ClineAccount | null) => {
@@ -102,13 +120,13 @@ const entry = (key: string, snap: ClineSnapshot, active: boolean) => ({
 
 export const saveCline = async (key: string) => {
     const safeKey = assertAccountKey(key);
-    const secrets = await readValidLiveSecrets();
+    const current = await readValidLiveFile();
     await updateVault(async (vault) => {
         const existing = vault.cline.data[safeKey];
         const now = new Date().toISOString();
         vault.cline.data[safeKey] = {
             createdAt: existing?.createdAt ?? now,
-            secrets,
+            secrets: current.text,
             updatedAt: now,
         };
         delete vault.cline.limits[safeKey];
@@ -122,10 +140,10 @@ export const loadCline = async (key: string) => {
     if (!snap) {
         throw publicError(404, `No Cline auth named ${safeKey}`);
     }
-    if (!parseSecrets(snap.secrets)) {
-        throw publicError(500, `Saved Cline auth named ${safeKey} does not contain a valid account token`);
+    if (!parseProviders(snap.secrets)) {
+        throw publicError(500, `Saved Cline auth named ${safeKey} does not contain a valid providers file`);
     }
-    await writePrivateFile(CLINE_SECRETS_PATH, snap.secrets);
+    await writePrivateFile(CLINE_PROVIDERS_PATH, snap.secrets);
 };
 
 export const deleteCline = async (key: string) => {
@@ -142,17 +160,20 @@ export const deleteCline = async (key: string) => {
 
 export const clineState = async () => {
     const vault = await readVault();
-    const activeAccount = parseSecrets(await liveSecrets().catch(() => ''))?.account ?? null;
+    const current = await liveFile();
+    const activeAccount = current ? parseProviders(current.text)?.account ?? null : null;
     return {
         entries: Object.entries(vault.cline.data)
-            .map(([key, snap]: [string, ClineSnapshot]) => entry(key, snap, isSameAccount(activeAccount, parseSecrets(snap.secrets)?.account ?? null)))
+            .map(([key, snap]: [string, ClineSnapshot]) =>
+                entry(key, snap, isSameAccount(activeAccount, parseProviders(snap.secrets)?.account ?? null)),
+            )
             .sort((a, b) => {
                 if (a.active !== b.active) {
                     return a.active ? -1 : 1;
                 }
                 return a.key.localeCompare(b.key);
             }),
-        secretsPath: CLINE_SECRETS_PATH,
+        providersPath: CLINE_PROVIDERS_PATH,
         vaultPath: VAULT_PATH,
     };
 };

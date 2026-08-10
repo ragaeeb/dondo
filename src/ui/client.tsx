@@ -27,7 +27,7 @@ type CodexState = {
 
 type ClineState = {
     entries: AccountEntry[];
-    secretsPath: string;
+    providersPath: string;
     vaultPath: string;
 };
 
@@ -41,6 +41,14 @@ type MinimaxState = {
     configPath: string;
     entries: AccountEntry[];
     vaultPath: string;
+};
+
+type MinimaxCheckInResult = {
+    alreadyClaimed: boolean;
+    claimed: boolean;
+    dayNo: number;
+    points: number;
+    status: 'claimed' | 'claimable' | 'disabled' | 'upcoming';
 };
 
 const BLOB_URL_REVOKE_DELAY_MS = 10_000;
@@ -630,7 +638,7 @@ const ClinePanel = ({ active }: { active: boolean }) => {
     return (
         <div hidden={!active}>
             <div class="toolbar">
-                <div class="muted small">{state ? `${state.secretsPath} · ${state.vaultPath}` : ''}</div>
+                <div class="muted small">{state ? `${state.providersPath} · ${state.vaultPath}` : ''}</div>
                 <div class="toolbar-actions">
                     <button
                         type="button"
@@ -857,6 +865,7 @@ const MinimaxPanel = ({ active }: { active: boolean }) => {
     const [loaded, setLoaded] = useState(false);
     const [pendingKey, setPendingKey] = useState('');
     const [exporting, setExporting] = useState(false);
+    const [checkingIn, setCheckingIn] = useState(false);
 
     const refresh = async (forceLimits = false) => {
         setStatus(forceLimits ? 'Refreshing limits...' : 'Loading accounts...');
@@ -931,6 +940,28 @@ const MinimaxPanel = ({ active }: { active: boolean }) => {
         }
     };
 
+    const checkIn = async () => {
+        setCheckingIn(true);
+        setStatus('Checking in...');
+        try {
+            const result = await api<MinimaxCheckInResult>('/api/minimax/check-in', {});
+            await refresh(true).catch(() => undefined);
+            if (result.claimed) {
+                setStatus(`Checked in for ${result.points} credits`);
+            } else if (result.alreadyClaimed) {
+                setStatus(`Already checked in today for ${result.points} credits`);
+            } else if (result.status === 'disabled') {
+                setStatus('MiniMax check-in is disabled today');
+            } else {
+                setStatus('MiniMax check-in is not available yet');
+            }
+        } catch (error) {
+            setStatus(error instanceof Error ? error.message : String(error));
+        } finally {
+            setCheckingIn(false);
+        }
+    };
+
     useEffect(() => {
         if (!active || loaded) {
             return;
@@ -955,6 +986,9 @@ const MinimaxPanel = ({ active }: { active: boolean }) => {
                     </button>
                     <button type="button" onClick={() => refresh(true).catch((error) => setStatus(error.message))}>
                         Refresh limits
+                    </button>
+                    <button type="button" aria-busy={checkingIn} disabled={checkingIn} onClick={() => checkIn()}>
+                        Daily Check-In
                     </button>
                 </div>
             </div>

@@ -101,9 +101,10 @@ Vault shape:
 
 `codex.limits` stores cached Codex ChatGPT usage data. Dondo fetches missing limits on first load and refreshes cached limits only when the UI `Refresh limits` button is used.
 
-`cline.data` stores encrypted snapshots of `~/.cline/data/secrets.json`. Loading a saved Cline account writes the complete
-secrets file back to the same path with `0600` permissions. Cline account rows use the stable account identity from the
-file only to show which saved account is active; token values are never returned by the state API or rendered in the UI.
+`cline.data` stores encrypted snapshots of `~/.cline/data/settings/providers.json`, the Cline account store. Loading a
+saved account writes the complete providers file back with `0600` permissions. Cline account rows use only the stable
+account identity to show which saved account is active; token values are never returned by the state API or rendered in
+the UI.
 
 `kiro.data` stores encrypted snapshots of `~/.aws/sso/cache/kiro-auth-token.json`. Loading a saved Kiro account
 writes a freshly validated snapshot back to the same path with `0600` permissions. Kiro watches this file and picks
@@ -123,7 +124,10 @@ saved account only when `Refresh limits` is selected.
 
 `minimax.data` stores encrypted snapshots of `~/Library/Application Support/MiniMax Agent/minimax-agent-config.json`. Loading a saved MiniMax account writes that snapshot back to the same path with `0600` permissions.
 
-`minimax.limits` caches the 5-hour and weekly MiniMax Code quotas fetched from its current coding-plan endpoint. Dondo fetches missing limits when the MiniMax tab opens and refreshes every saved account only when `Refresh limits` is selected.
+`minimax.limits` caches MiniMax Code's 5-hour and weekly quotas plus the current numeric Credits balance from the
+MiniMax Code commerce endpoint. Dondo fetches missing limits when the MiniMax tab opens and refreshes every saved
+account only when `Refresh limits` is selected. The MiniMax tab also exposes the current Daily Check-In action; a
+successful claim invalidates the saved account's cached limits so the balance can be refreshed immediately.
 
 Each limit cache entry has this shape:
 
@@ -155,7 +159,7 @@ ANTIGRAVITY_KEYCHAIN=login.keychain-db
 ANTIGRAVITY_VERSION=2.0.3
 ANTIGRAVITY_LANGUAGE_SERVER_PATH=/Applications/Antigravity.app/Contents/Resources/bin/language_server
 CODEX_AUTH_PATH=~/.codex/auth.json
-CLINE_SECRETS_PATH=~/.cline/data/secrets.json
+CLINE_PROVIDERS_PATH=~/.cline/data/settings/providers.json
 KIRO_AUTH_PATH=~/.aws/sso/cache/kiro-auth-token.json
 KIRO_PROFILE_PATH="~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/profile.json"
 KIRO_AUTH_REFRESH_URL=https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken
@@ -200,6 +204,7 @@ require `POST` and the `X-Dondo-Export: 1` header.
 - `GET /api/minimax/state`
 - `POST /api/minimax/export`
 - `POST /api/minimax/limits/refresh` with optional `{ "key": "label" }`
+- `POST /api/minimax/check-in` with optional `{ "key": "label" }`
 - `POST /api/minimax/save` with `{ "key": "label" }`
 - `POST /api/minimax/load` with `{ "key": "label" }`
 - `POST /api/minimax/delete` with `{ "key": "label" }`
