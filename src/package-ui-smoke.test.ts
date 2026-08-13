@@ -47,6 +47,7 @@ const runCommand = async (argv: string[], cwd: string) => {
     if (exitCode !== 0) {
         throw new Error(`${argv.join(' ')} failed\n${stdoutText}\n${stderrText}`.trim());
     }
+    return { stderrText, stdoutText };
 };
 
 const waitForHealthyUi = async (url: string) => {
@@ -90,9 +91,14 @@ describe('packaged UI smoke', () => {
 
         try {
             await runCommand(['bun', 'pm', 'pack', '--destination', tempDir], process.cwd());
+            const tarball = packageTarballPath(tempDir, manifest);
+            const { stdoutText: packedEntries } = await runCommand(['tar', '-tzf', tarball], tempDir);
+            expect(packedEntries).toContain('package/scripts/build.ts');
+            expect(packedEntries).toContain('package/scripts/dev.ts');
+            expect(packedEntries).not.toContain('.test.ts');
             await Bun.write(join(tempDir, 'package.json'), '{"name":"dondo-smoke","private":true}\n');
 
-            const proc = Bun.spawn(['bunx', '--package', packageTarballPath(tempDir, manifest), manifest.name], {
+            const proc = Bun.spawn(['bunx', '--package', tarball, manifest.name], {
                 cwd: tempDir,
                 env: {
                     ...process.env,

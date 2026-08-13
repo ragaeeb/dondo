@@ -1,89 +1,48 @@
-import { CLINE_SECRETS_PATH, VAULT_PATH } from '../config.ts';
+import { CORRUPTED_ACCOUNT_ERROR, sortAccountEntries } from '../account-state.ts';
+import { CLINE_PROVIDERS_PATH, VAULT_PATH } from '../config.ts';
 import { assertAccountKey, publicError } from '../errors.ts';
-import { writePrivateFile } from '../storage/file.ts';
-import { readVault, updateVault } from '../storage/vault.ts';
-import type { ClineSnapshot } from '../types.ts';
+import { decodeJwtPayload } from '../jwt.ts';
+import { readBoundedLocalText, writePrivateFile } from '../storage/file.ts';
+import { readVaultSection, updateVaultSection } from '../storage/vault.ts';
+import type { ClineSnapshot, ClineVault } from '../types.ts';
+import { type ClineAccount, parseClineProviders } from './providers.ts';
 
-const CLINE_ACCOUNT_KEY = 'cline:clineAccountId';
-
-type ClineAccount = {
-    idToken?: string;
-    refreshToken?: string;
-    userInfo?: {
-        email?: string;
-        id?: string;
-    };
+const liveFile = async () => {
+    const text = await readBoundedLocalText(CLINE_PROVIDERS_PATH);
+    return text === null ? null : { path: CLINE_PROVIDERS_PATH, text };
 };
 
-type ClineSecrets = Record<string, unknown>;
-
-const isRecord = (value: unknown): value is Record<string, unknown> => {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
-};
-
-const parseJsonRecord = (text: string) => {
-    try {
-        const value = JSON.parse(text) as unknown;
-        return isRecord(value) ? value : null;
-    } catch {
-        return null;
+const readValidLiveFile = async () => {
+    const current = await liveFile();
+    if (!current) {
+        throw publicError(
+            404,
+            `No live Cline session found at ${CLINE_PROVIDERS_PATH}. Sign into Cline, then use Save current.`,
+        );
     }
-};
-
-const parseAccount = (secrets: ClineSecrets): ClineAccount | null => {
-    const raw = secrets[CLINE_ACCOUNT_KEY];
-    if (typeof raw !== 'string' || !raw.trim()) {
-        return null;
+    if (!current.text.trim()) {
+        throw publicError(400, `${CLINE_PROVIDERS_PATH} is empty`);
     }
-    const account = parseJsonRecord(raw);
-    return typeof account?.idToken === 'string' && account.idToken ? (account as ClineAccount) : null;
-};
-
-const parseSecrets = (text: string) => {
-    const secrets = parseJsonRecord(text);
-    if (!secrets) {
-        return null;
+    if (!parseClineProviders(current.text)) {
+        throw publicError(400, `${CLINE_PROVIDERS_PATH} does not contain a valid Cline account token`);
     }
-    const account = parseAccount(secrets);
-    return account ? { account, secrets } : null;
-};
-
-const liveSecrets = async () => {
-    const file = Bun.file(CLINE_SECRETS_PATH);
-    return (await file.exists()) ? await file.text() : '';
-};
-
-const readValidLiveSecrets = async () => {
-    const file = Bun.file(CLINE_SECRETS_PATH);
-    if (!(await file.exists())) {
-        throw publicError(404, `No live Cline session found. Sign into Cline, then use Save current.`);
-    }
-    const text = await file.text();
-    if (!text.trim()) {
-        throw publicError(400, `${CLINE_SECRETS_PATH} is empty`);
-    }
-    const parsed = parseSecrets(text);
-    if (!parsed) {
-        throw publicError(400, `${CLINE_SECRETS_PATH} does not contain a valid Cline account token`);
-    }
-    return text;
+    return current;
 };
 
 const jwtSubject = (token: string) => {
-    const part = token.split('.')[1];
-    if (!part) {
-        return '';
-    }
-    try {
-        const payload = JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as { sub?: unknown };
-        return typeof payload.sub === 'string' ? payload.sub : '';
-    } catch {
-        return '';
-    }
+    const subject = decodeJwtPayload(token)?.sub;
+    return typeof subject === 'string' ? subject : '';
 };
 
 const identity = (account: ClineAccount) => {
-    return account.userInfo?.id || account.userInfo?.email || (account.idToken ? jwtSubject(account.idToken) : '') || '';
+    return (
+        account.accountId ||
+        account.id ||
+        account.email ||
+        (account.accessToken ? jwtSubject(account.accessToken) : '') ||
+        account.accessToken ||
+        ''
+    );
 };
 
 const isSameAccount = (a: ClineAccount | null, b: ClineAccount | null) => {
@@ -100,59 +59,85 @@ const entry = (key: string, snap: ClineSnapshot, active: boolean) => ({
     updatedAt: snap.updatedAt,
 });
 
+const isReadableSnapshot = (snapshot: ClineSnapshot) => parseClineProviders(snapshot.secrets) !== null;
+
+const assertReadableAccount = (section: ClineVault, key: string) => {
+    if (section.corruptions?.[key]) {
+        throw publicError(409, CORRUPTED_ACCOUNT_ERROR);
+    }
+    const snapshot = section.data[key];
+    if (!snapshot) {
+        throw publicError(404, `No Cline auth named ${key}`);
+    }
+    if (!isReadableSnapshot(snapshot)) {
+        throw publicError(409, CORRUPTED_ACCOUNT_ERROR);
+    }
+    return snapshot;
+};
+
 export const saveCline = async (key: string) => {
     const safeKey = assertAccountKey(key);
-    const secrets = await readValidLiveSecrets();
-    await updateVault(async (vault) => {
-        const existing = vault.cline.data[safeKey];
+    const current = await readValidLiveFile();
+    await updateVaultSection('cline', (section) => {
+        const existing = section.data[safeKey];
+        if (section.corruptions?.[safeKey] || (existing && !isReadableSnapshot(existing))) {
+            throw publicError(409, CORRUPTED_ACCOUNT_ERROR);
+        }
         const now = new Date().toISOString();
-        vault.cline.data[safeKey] = {
+        section.data[safeKey] = {
             createdAt: existing?.createdAt ?? now,
-            secrets,
+            secrets: current.text,
             updatedAt: now,
         };
-        delete vault.cline.limits[safeKey];
+        delete section.limits[safeKey];
         return { result: undefined };
     });
 };
 
 export const loadCline = async (key: string) => {
     const safeKey = assertAccountKey(key);
-    const snap = (await readVault()).cline.data[safeKey];
-    if (!snap) {
-        throw publicError(404, `No Cline auth named ${safeKey}`);
-    }
-    if (!parseSecrets(snap.secrets)) {
-        throw publicError(500, `Saved Cline auth named ${safeKey} does not contain a valid account token`);
-    }
-    await writePrivateFile(CLINE_SECRETS_PATH, snap.secrets);
+    const snap = assertReadableAccount(await readVaultSection('cline'), safeKey);
+    await writePrivateFile(CLINE_PROVIDERS_PATH, snap.secrets);
 };
 
 export const deleteCline = async (key: string) => {
     const safeKey = assertAccountKey(key);
-    await updateVault(async (vault) => {
-        if (!vault.cline.data[safeKey]) {
+    await updateVaultSection('cline', (section) => {
+        if (!section.data[safeKey] && !section.corruptions?.[safeKey]) {
             throw publicError(404, `No Cline auth named ${safeKey}`);
         }
-        delete vault.cline.data[safeKey];
-        delete vault.cline.limits[safeKey];
+        delete section.data[safeKey];
+        delete section.limits[safeKey];
+        if (section.corruptions) {
+            delete section.corruptions[safeKey];
+        }
         return { result: undefined };
     });
 };
 
 export const clineState = async () => {
-    const vault = await readVault();
-    const activeAccount = parseSecrets(await liveSecrets().catch(() => ''))?.account ?? null;
+    const section = await readVaultSection('cline');
+    const current = await liveFile().catch(() => null);
+    const activeAccount = current ? (parseClineProviders(current.text)?.account ?? null) : null;
+    const parsedEntries = Object.entries(section.data).map(
+        ([key, snap]) => [key, snap, parseClineProviders(snap.secrets)] as const,
+    );
+    const healthyEntries = parsedEntries
+        .filter(([, , account]) => account !== null)
+        .map(([key, snap, account]) => entry(key, snap, isSameAccount(activeAccount, account?.account ?? null)));
+    const semanticCorruptions = parsedEntries.filter(([, , account]) => account === null).map(([key]) => key);
+    const corruptedEntries = [...Object.keys(section.corruptions ?? {}), ...semanticCorruptions].map((key) => ({
+        active: false,
+        corrupted: true as const,
+        error: CORRUPTED_ACCOUNT_ERROR,
+        key,
+        limitUpdatedAt: '',
+        quota: null,
+        updatedAt: '',
+    }));
     return {
-        entries: Object.entries(vault.cline.data)
-            .map(([key, snap]: [string, ClineSnapshot]) => entry(key, snap, isSameAccount(activeAccount, parseSecrets(snap.secrets)?.account ?? null)))
-            .sort((a, b) => {
-                if (a.active !== b.active) {
-                    return a.active ? -1 : 1;
-                }
-                return a.key.localeCompare(b.key);
-            }),
-        secretsPath: CLINE_SECRETS_PATH,
+        entries: sortAccountEntries([...healthyEntries, ...corruptedEntries]),
+        providersPath: CLINE_PROVIDERS_PATH,
         vaultPath: VAULT_PATH,
     };
 };

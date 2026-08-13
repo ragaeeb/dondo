@@ -1,9 +1,13 @@
 import { rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_KEYCHAIN, ANTIGRAVITY_SERVICE } from '../config.ts';
-import { run } from '../shell.ts';
-import type { Snapshot } from '../types.ts';
+import { waitForAll } from '../async-queue.ts';
+import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_SERVICE } from '../config.ts';
+import { publicError } from '../errors.ts';
+import { isRunError, run } from '../shell.ts';
+import type { AntigravityCredential } from '../types.ts';
+
+const SECURITY_PATH = '/usr/bin/security';
 
 export const parsePassword = (stderr: string) => {
     const match = stderr.match(/password: "((?:\\"|[^"])*)"/);
@@ -13,30 +17,28 @@ export const parsePassword = (stderr: string) => {
     return match[1]?.replace(/\\"/g, '"') ?? '';
 };
 
-const keychainArgs = () => {
-    return ANTIGRAVITY_KEYCHAIN ? [ANTIGRAVITY_KEYCHAIN] : [];
-};
-
-const deleteLivePassword = async () => {
-    await run('security', [
+export const deleteLivePassword = async (runCommand: typeof run = run) => {
+    await runCommand(SECURITY_PATH, [
         'delete-generic-password',
         '-s',
         ANTIGRAVITY_SERVICE,
         '-a',
         ANTIGRAVITY_ACCOUNT,
-        ...keychainArgs(),
-    ]).catch(() => {});
+    ]).catch((error) => {
+        if (!isRunError(error) || error.code !== 44) {
+            throw publicError(500, 'Dondo could not delete the Antigravity credential from macOS Keychain');
+        }
+    });
 };
 
-export const readCurrentSnapshot = async (): Promise<Snapshot> => {
-    const { stderr } = await run('security', [
+const readSnapshot = async (runCommand: typeof run): Promise<AntigravityCredential> => {
+    const { stderr } = await runCommand(SECURITY_PATH, [
         'find-generic-password',
         '-s',
         ANTIGRAVITY_SERVICE,
         '-a',
         ANTIGRAVITY_ACCOUNT,
         '-g',
-        ...keychainArgs(),
     ]);
     const now = new Date().toISOString();
     return {
@@ -50,29 +52,64 @@ export const readCurrentSnapshot = async (): Promise<Snapshot> => {
     };
 };
 
-export const restoreSnapshot = async (snap: Snapshot) => {
-    await deleteLivePassword();
-    await run('security', [
-        'add-generic-password',
+const readOptionalSnapshot = async (runCommand: typeof run) => {
+    return readSnapshot(runCommand).catch((error) => {
+        if (isRunError(error) && error.code === 44) {
+            return null;
+        }
+        throw publicError(500, 'Dondo could not access the current Antigravity credential in macOS Keychain');
+    });
+};
+
+export const readCurrentSnapshot = async (runCommand: typeof run = run): Promise<AntigravityCredential> => {
+    return readSnapshot(runCommand).catch(() => {
+        throw publicError(500, 'Dondo could not access the current Antigravity credential in macOS Keychain');
+    });
+};
+
+const writeAndVerifySnapshot = async (snap: AntigravityCredential, runCommand: typeof run) => {
+    await runCommand(
+        SECURITY_PATH,
+        ['add-generic-password', '-s', snap.service, '-a', snap.account, '-l', snap.label, '-D', snap.kind, '-U', '-w'],
+        { stdin: `${snap.password}\n${snap.password}\n` },
+    );
+    const restored = await runCommand(SECURITY_PATH, [
+        'find-generic-password',
         '-s',
         snap.service,
         '-a',
         snap.account,
-        '-l',
-        snap.label,
-        '-D',
-        snap.kind,
         '-w',
-        snap.password,
-        '-U',
-        ...keychainArgs(),
     ]);
+    if (restored.stdout.replace(/\r?\n$/, '') !== snap.password) {
+        throw new Error('macOS Keychain did not persist the restored credential');
+    }
 };
 
-export const clearLiveAuth = async () => {
-    await deleteLivePassword();
+export const replaceLiveSnapshot = async (snap: AntigravityCredential, runCommand: typeof run = run) => {
+    const previous = await readOptionalSnapshot(runCommand);
+    try {
+        await writeAndVerifySnapshot(snap, runCommand);
+    } catch {
+        try {
+            if (previous) {
+                await writeAndVerifySnapshot(previous, runCommand);
+            } else {
+                await deleteLivePassword(runCommand);
+            }
+        } catch {
+            throw publicError(
+                500,
+                'Dondo could not restore the previous Antigravity credential after a failed replacement',
+            );
+        }
+        throw publicError(500, 'Dondo could not replace the Antigravity credential in macOS Keychain');
+    }
+};
+
+export const clearLocalState = async () => {
     const home = homedir();
-    await Promise.all(
+    await waitForAll(
         [
             join(home, '.antigravity-agent', 'cloud_accounts.db'),
             join(home, '.gemini', 'antigravity'),
@@ -81,4 +118,12 @@ export const clearLiveAuth = async () => {
             join(home, 'Library', 'Application Support', 'Antigravity'),
         ].map((path) => rm(path, { force: true, recursive: true })),
     );
+};
+
+export const clearLiveAuth = async (
+    runCommand: typeof run = run,
+    clearState: typeof clearLocalState = clearLocalState,
+) => {
+    await clearState();
+    await deleteLivePassword(runCommand);
 };

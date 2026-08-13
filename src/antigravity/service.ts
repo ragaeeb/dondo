@@ -1,11 +1,31 @@
-import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_SERVICE, VAULT_PATH } from '../config.ts';
+import {
+    boundedMap,
+    CORRUPTED_ACCOUNT_ERROR,
+    selectRefreshEntries,
+    sortAccountEntries,
+    stateVersion,
+} from '../account-state.ts';
+import { createAsyncQueue } from '../async-queue.ts';
+import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_PROCESS_NAME, ANTIGRAVITY_SERVICE, VAULT_PATH } from '../config.ts';
 import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
-import { readVault, updateVault } from '../storage/vault.ts';
-import type { AppVault, LimitResult, Snapshot } from '../types.ts';
-import { decodeToken, fetchLimits } from './google.ts';
-import { clearLiveAuth, readCurrentSnapshot, restoreSnapshot } from './keychain.ts';
+import { isProcessRunning } from '../process.ts';
+import { readVaultSection, updateVaultSection } from '../storage/vault.ts';
+import type { AntigravityCredential, LimitResult, PlatformVault, Snapshot } from '../types.ts';
+import { decodeToken, fetchLimits, resolveGoogleIdentity } from './google.ts';
+import { clearLiveAuth, clearLocalState, readCurrentSnapshot, replaceLiveSnapshot } from './keychain.ts';
 
-const isSameSnapshot = (a: Snapshot | null, b: Snapshot) => {
+type AntigravityLimitUpdate = {
+    key: string;
+    password?: string;
+    quota: LimitResult;
+    sourceLimitVersion: string;
+    sourceSnapshotVersion: string;
+};
+
+const queueAntigravityOperation = createAsyncQueue();
+let liveIdentityCache: { identity: string; passwordVersion: string } | undefined;
+
+const hasSameToken = (a: AntigravityCredential | null, b: Snapshot) => {
     if (a?.service !== b.service || a.account !== b.account) {
         return false;
     }
@@ -22,101 +42,200 @@ const hasNoUsageLeft = (quota: LimitResult | null) => {
     return limits.length > 0 && limits.every((model) => model.percentage <= 0);
 };
 
-const sortEntries = <T extends { active: boolean; key: string; quota: LimitResult | null }>(entries: T[]) => {
-    return [...entries].sort((a, b) => {
-        if (a.active !== b.active) {
-            return a.active ? -1 : 1;
-        }
-        if (hasNoUsageLeft(a.quota) !== hasNoUsageLeft(b.quota)) {
-            return hasNoUsageLeft(a.quota) ? 1 : -1;
-        }
-        return a.key.localeCompare(b.key);
-    });
+const isReadableCredential = (snapshot: AntigravityCredential) => {
+    return (
+        snapshot.account === ANTIGRAVITY_ACCOUNT &&
+        snapshot.service === ANTIGRAVITY_SERVICE &&
+        decodeToken(snapshot.password) !== null
+    );
 };
 
-const updateMissingOrStaleLimits = async (vault: AppVault, force: boolean, targetKey?: string) => {
-    let changed = false;
-    if (targetKey && !vault.antigravity.data[targetKey]) {
-        throw publicError(404, `No snapshot named ${targetKey}`);
-    }
+const isReadableSnapshot = (snapshot: Snapshot) => {
+    return isReadableCredential(snapshot) && Boolean(snapshot.identity.trim());
+};
 
-    for (const [key, snap] of Object.entries(vault.antigravity.data)) {
-        if ((targetKey && key !== targetKey) || (!force && vault.antigravity.limits[key])) {
-            continue;
-        }
-        const result = await fetchLimits(snap).catch((error) => ({
+const liveIdentity = async (credential: AntigravityCredential | null) => {
+    if (!credential || !isReadableCredential(credential)) {
+        return null;
+    }
+    const passwordVersion = stateVersion(credential.password);
+    if (liveIdentityCache?.passwordVersion === passwordVersion) {
+        return liveIdentityCache.identity;
+    }
+    const resolved = await resolveGoogleIdentity(credential);
+    liveIdentityCache = { identity: resolved.identity, passwordVersion };
+    return resolved.identity;
+};
+
+const assertReadableAccount = (section: PlatformVault, key: string) => {
+    if (section.corruptions?.[key]) {
+        throw publicError(409, CORRUPTED_ACCOUNT_ERROR);
+    }
+    const snapshot = section.data[key];
+    if (!snapshot) {
+        throw publicError(404, `No snapshot named ${key}`);
+    }
+    if (!isReadableSnapshot(snapshot)) {
+        throw publicError(409, CORRUPTED_ACCOUNT_ERROR);
+    }
+    return snapshot;
+};
+
+const assertAntigravityClosed = async () => {
+    if (await isProcessRunning(ANTIGRAVITY_PROCESS_NAME)) {
+        throw publicError(
+            409,
+            'Quit Antigravity completely before clearing or loading an account. Antigravity must be closed while Dondo replaces its local login state.',
+        );
+    }
+};
+
+const fetchAntigravityLimitUpdates = async (section: PlatformVault, force: boolean, targetKey?: string) => {
+    if (targetKey) {
+        assertReadableAccount(section, targetKey);
+    }
+    const readableData = Object.fromEntries(
+        Object.entries(section.data).filter(([, snapshot]) => isReadableSnapshot(snapshot)),
+    );
+    const selected = selectRefreshEntries(readableData, section.limits, targetKey ? { force, targetKey } : { force });
+    return boundedMap(selected, async ([key, snapshot]): Promise<AntigravityLimitUpdate> => {
+        const result = await fetchLimits(snapshot).catch((error) => ({
             password: undefined,
             quota: cleanLimitError(error),
         }));
-        if (result.password) {
-            vault.antigravity.data[key] = { ...snap, password: result.password, updatedAt: new Date().toISOString() };
-        }
-        vault.antigravity.limits[key] = { fetchedAt: new Date().toISOString(), quota: result.quota };
-        changed = true;
-    }
-
-    return changed;
-};
-
-export const saveAntigravity = async (key: string) => {
-    const safeKey = assertAccountKey(key);
-    const snapshot = await readCurrentSnapshot();
-    await updateVault(async (vault) => {
-        vault.antigravity.data[safeKey] = snapshot;
-        delete vault.antigravity.limits[safeKey];
-        return { result: undefined };
+        return {
+            key,
+            ...(result.password ? { password: result.password } : {}),
+            quota: result.quota,
+            sourceLimitVersion: stateVersion(section.limits[key] ?? null),
+            sourceSnapshotVersion: stateVersion(snapshot),
+        };
     });
 };
 
-export const loadAntigravity = async (key: string) => {
+const saveAntigravityOperation = async (key: string) => {
     const safeKey = assertAccountKey(key);
-    const snap = (await readVault()).antigravity.data[safeKey];
-    if (!snap) {
-        throw publicError(404, `No snapshot named ${safeKey}`);
+    const credential = await readCurrentSnapshot();
+    if (!isReadableCredential(credential)) {
+        throw publicError(400, 'Current Antigravity credential payload is invalid');
     }
-    await restoreSnapshot(snap);
+    const resolved = await resolveGoogleIdentity(credential).catch(() => {
+        throw publicError(502, 'Could not verify the current Antigravity account identity');
+    });
+    const snapshot: Snapshot = {
+        ...credential,
+        identity: resolved.identity,
+        password: resolved.password ?? credential.password,
+    };
+    await updateVaultSection('antigravity', (section) => {
+        const existing = section.data[safeKey];
+        if (section.corruptions?.[safeKey] || (existing && !isReadableSnapshot(existing))) {
+            throw publicError(409, CORRUPTED_ACCOUNT_ERROR);
+        }
+        section.data[safeKey] = {
+            ...snapshot,
+            createdAt: existing?.createdAt ?? snapshot.createdAt,
+        };
+        delete section.limits[safeKey];
+        return { result: undefined };
+    });
+    liveIdentityCache = { identity: resolved.identity, passwordVersion: stateVersion(credential.password) };
 };
+
+export const saveAntigravity = (key: string) => queueAntigravityOperation(() => saveAntigravityOperation(key));
+
+const loadAntigravityOperation = async (key: string) => {
+    const safeKey = assertAccountKey(key);
+    await assertAntigravityClosed();
+    const snapshot = assertReadableAccount(await readVaultSection('antigravity'), safeKey);
+    await clearLocalState();
+    await replaceLiveSnapshot(snapshot);
+    liveIdentityCache = { identity: snapshot.identity, passwordVersion: stateVersion(snapshot.password) };
+};
+
+export const loadAntigravity = (key: string) => queueAntigravityOperation(() => loadAntigravityOperation(key));
 
 export const deleteAntigravity = async (key: string) => {
     const safeKey = assertAccountKey(key);
-    await updateVault(async (vault) => {
-        if (!vault.antigravity.data[safeKey]) {
+    await updateVaultSection('antigravity', (section) => {
+        if (!section.data[safeKey] && !section.corruptions?.[safeKey]) {
             throw publicError(404, `No snapshot named ${safeKey}`);
         }
-        delete vault.antigravity.data[safeKey];
-        delete vault.antigravity.limits[safeKey];
+        delete section.data[safeKey];
+        delete section.limits[safeKey];
+        if (section.corruptions) {
+            delete section.corruptions[safeKey];
+        }
         return { result: undefined };
     });
 };
 
-export const clearAntigravity = async () => {
+const clearAntigravityOperation = async () => {
+    await assertAntigravityClosed();
     await clearLiveAuth();
+    liveIdentityCache = undefined;
 };
+
+export const clearAntigravity = () => queueAntigravityOperation(clearAntigravityOperation);
 
 export const antigravityState = async (options: { refreshLimitKey?: string; refreshLimits?: boolean } = {}) => {
     const refreshLimitKey = options.refreshLimitKey ? assertAccountKey(options.refreshLimitKey) : undefined;
-    const vault = await updateVault(async (current) => {
-        const changed = await updateMissingOrStaleLimits(current, options.refreshLimits === true, refreshLimitKey);
-        return { result: current, write: changed };
+    const snapshot = await readVaultSection('antigravity');
+    const updates = await fetchAntigravityLimitUpdates(snapshot, options.refreshLimits === true, refreshLimitKey);
+    const section =
+        updates.length === 0
+            ? snapshot
+            : await updateVaultSection('antigravity', (current) => {
+                  let changed = false;
+                  for (const update of updates) {
+                      const saved = current.data[update.key];
+                      if (
+                          !saved ||
+                          stateVersion(saved) !== update.sourceSnapshotVersion ||
+                          stateVersion(current.limits[update.key] ?? null) !== update.sourceLimitVersion
+                      ) {
+                          continue;
+                      }
+                      if (update.password) {
+                          saved.password = update.password;
+                          saved.updatedAt = new Date().toISOString();
+                      }
+                      current.limits[update.key] = { fetchedAt: new Date().toISOString(), quota: update.quota };
+                      changed = true;
+                  }
+                  return { result: current, write: changed };
+              });
+    const live = await queueAntigravityOperation(() => readCurrentSnapshot().catch(() => null));
+    const activeIdentity = await liveIdentity(live).catch(() => null);
+    const healthyEntries = Object.entries(section.data).map(([key, saved]: [string, Snapshot]) => {
+        const snapshotValid = isReadableSnapshot(saved);
+        const cached = section.limits[key];
+        return {
+            account: saved.account,
+            active: snapshotValid && (activeIdentity ? saved.identity === activeIdentity : hasSameToken(live, saved)),
+            ...(!snapshotValid ? { corrupted: true as const, error: CORRUPTED_ACCOUNT_ERROR } : {}),
+            key,
+            limitUpdatedAt: cached?.fetchedAt ?? '',
+            quota: cached?.quota ?? null,
+            service: saved.service,
+            updatedAt: saved.updatedAt,
+        };
     });
-    const live = await readCurrentSnapshot().catch(() => null);
+    const corruptedEntries = Object.keys(section.corruptions ?? {}).map((key) => ({
+        account: '',
+        active: false,
+        corrupted: true as const,
+        error: CORRUPTED_ACCOUNT_ERROR,
+        key,
+        limitUpdatedAt: '',
+        quota: null,
+        service: '',
+        updatedAt: '',
+    }));
 
     return {
         account: ANTIGRAVITY_ACCOUNT,
-        entries: sortEntries(
-            Object.entries(vault.antigravity.data).map(([key, snap]: [string, Snapshot]) => {
-                const cached = vault.antigravity.limits[key];
-                return {
-                    account: snap.account,
-                    active: isSameSnapshot(live, snap),
-                    key,
-                    limitUpdatedAt: cached?.fetchedAt ?? '',
-                    quota: cached?.quota ?? null,
-                    service: snap.service,
-                    updatedAt: snap.updatedAt,
-                };
-            }),
-        ),
+        entries: sortAccountEntries([...healthyEntries, ...corruptedEntries], hasNoUsageLeft),
         service: ANTIGRAVITY_SERVICE,
         vaultPath: VAULT_PATH,
     };
