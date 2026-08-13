@@ -540,6 +540,7 @@ it('should report a fixed error when Kiro session rollback is incomplete', async
         const profilePath = process.env.KIRO_PROFILE_PATH;
         const currentAuth = JSON.stringify({ authMethod: 'IdC', profileArn: 'arn:current', refreshToken: 'current' });
         const savedAuth = JSON.stringify({ authMethod: 'IdC', profileArn: 'arn:saved', refreshToken: 'saved' });
+        const realFs = await import('node:fs/promises');
         let finished = false;
         let lateWrite = false;
         let privateWrites = 0;
@@ -555,6 +556,7 @@ it('should report a fixed error when Kiro session rollback is incomplete', async
             },
         }));
         mock.module('node:fs/promises', () => ({
+            ...realFs,
             chmod: async () => { throw new Error('token=commit-secret'); },
             rename: async () => {},
             rm: async () => {},
@@ -841,7 +843,7 @@ it('should not treat a shared Kiro profile ARN as account identity', async () =>
     }
 });
 
-it('should refresh expired active Kiro usage without replacing the saved session', async () => {
+it('should refresh expired active Kiro usage and persist rotated credentials', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dondo-kiro-active-refresh-test-'));
     const authPath = join(dir, 'kiro-auth-token.json');
     let refreshRequests = 0;
@@ -868,6 +870,7 @@ it('should refresh expired active Kiro usage without replacing the saved session
     });
     const script = `
         const { kiroState, saveKiro } = await import('./src/kiro/service.ts');
+        const { readVaultSection } = await import('./src/storage/vault.ts');
         const before = await Bun.file(process.env.KIRO_AUTH_PATH).text();
         await saveKiro('saved');
         const state = await kiroState();
@@ -876,6 +879,7 @@ it('should refresh expired active Kiro usage without replacing the saved session
         console.log(JSON.stringify({
             active: entry?.active ?? false,
             liveUnchanged: before === after,
+            savedRefresh: JSON.parse((await readVaultSection('kiro')).data.saved.auth).refreshToken,
             quotaOk: entry?.quota?.ok ?? false,
         }));
     `;
@@ -912,7 +916,12 @@ it('should refresh expired active Kiro usage without replacing the saved session
         if (exitCode !== 0) {
             throw new Error(stderr);
         }
-        expect(JSON.parse(stdout)).toEqual({ active: true, liveUnchanged: true, quotaOk: true });
+        expect(JSON.parse(stdout)).toEqual({
+            active: true,
+            liveUnchanged: true,
+            quotaOk: true,
+            savedRefresh: 'refreshed-refresh',
+        });
         expect(refreshRequests).toBe(1);
     } finally {
         server.stop(true);

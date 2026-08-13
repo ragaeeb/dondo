@@ -230,6 +230,7 @@ it('requires a non-empty string MiniMax agent identity', async () => {
 
 it('fetches MiniMax plan membership and usage concurrently', async () => {
     const started = new Set<string>();
+    const signedTimes: Array<[string, string]> = [];
     let releaseRequests = () => {};
     let markConcurrent = () => {};
     const gate = new Promise<void>((resolve) => {
@@ -246,8 +247,13 @@ it('fetches MiniMax plan membership and usage concurrently', async () => {
         await gate;
         return Response.json(payload);
     };
-    globalThis.fetch = (async (input: string | URL | Request) => {
-        const path = new URL(String(input)).pathname;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(String(input));
+        const path = url.pathname;
+        if (path.endsWith('/matrix/api/v1/commerce/get_membership_info')) {
+            const headers = new Headers(init?.headers);
+            signedTimes.push([url.searchParams.get('unix') ?? '', headers.get('x-timestamp') ?? '']);
+        }
         if (path.endsWith('/v1/api/user/info')) {
             return Response.json({ data: { userInfo: { realUserID: 'real-user' } } });
         }
@@ -278,6 +284,8 @@ it('fetches MiniMax plan membership and usage concurrently', async () => {
         releaseRequests();
     }
     expect((await resultPromise).ok).toBe(true);
+    expect(signedTimes.length).toBe(1);
+    expect(signedTimes.every(([unix, header]) => unix && unix === header)).toBe(true);
 });
 
 it('does not claim when MiniMax check-in status is already claimed', async () => {

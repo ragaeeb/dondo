@@ -254,7 +254,7 @@ const fetchKiroLimitUpdates = async (
             quota = await fetchKiroLimits(auth);
             if (!quota.ok && quota.error === 'Saved Kiro access token is expired or rejected') {
                 const refreshed = await refreshSocialAuth(auth, key);
-                if (!isSameAuth(activeAuth, auth)) {
+                if (isSameAuth(activeAuth, auth)) {
                     refreshedAuth = JSON.stringify(refreshed, null, 2);
                 }
                 quota = await fetchKiroLimits(refreshed);
@@ -465,7 +465,10 @@ export const kiroState = async (options: { refreshLimitKey?: string; refreshLimi
                   }
                   return { result: current, write: changed };
               });
-    const matchingKey = matchingKiroEntry(section, activeAuth)?.[0];
+    const preferredActive = activeKiroKey ? section.data[activeKiroKey] : undefined;
+    const matchingKey =
+        matchingKiroEntry(section, activeAuth)?.[0] ??
+        (activeKiroKey && preferredActive && isKiroSnapshotConfigValid(preferredActive) ? activeKiroKey : undefined);
     activeKiroKey = matchingKey;
     const healthyEntries = Object.entries(section.data)
         .filter(([, saved]) => isKiroSnapshotConfigValid(saved))

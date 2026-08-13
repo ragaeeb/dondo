@@ -5,6 +5,7 @@ export const isProcessRunning = async (name: string) => {
     const proc = Bun.spawn(['/usr/bin/pgrep', '-x', '--', literalPattern], {
         stderr: 'ignore',
         stdout: 'ignore',
+        timeout: 5_000,
     });
     const exitCode = await proc.exited;
     if (exitCode === 0) {

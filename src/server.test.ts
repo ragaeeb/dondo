@@ -308,17 +308,17 @@ it('should cancel oversized streamed JSON bodies and release their reader lock',
             controller.enqueue(new Uint8Array(MAX_JSON_BODY_BYTES + 1));
         },
     });
-    const response = await app(
-        new Request('http://127.0.0.1:3000/api/antigravity/save', {
-            body: stream,
-            headers: { 'Content-Type': 'application/json' },
-            method: 'POST',
-        }),
-    );
+    const request = new Request('http://127.0.0.1:3000/api/antigravity/save', {
+        body: stream,
+        ...({ duplex: 'half' } as { duplex: 'half' }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+    });
+    const response = await app(request);
 
     expect(response.status).toBe(413);
     expect(cancelled).toBe(true);
-    expect(stream.locked).toBe(false);
+    expect(request.body?.locked).toBe(false);
 });
 
 it('should not expose token-shaped fields in API error responses', async () => {
@@ -410,8 +410,8 @@ it('should stream large multi-account exports in bounded chunks', async () => {
 
     expect(chunks).toBeGreaterThan(1);
     expect(response.headers.get('content-length')).toBe(String(bytes));
-    expect(iteratorCalls).toBe(2);
-    expect(generatedAccounts).toBe(4_000);
+    expect(iteratorCalls).toBe(1);
+    expect(generatedAccounts).toBe(2_000);
 });
 
 it('should preflight the exact export ceiling before returning a body', async () => {
@@ -453,7 +453,6 @@ it('should clean up the export iterator when the response stream is cancelled', 
     const exportApp = createFetch(assets, {
         exportByteIterator: () => {
             factoryCalls += 1;
-            const streamIterator = factoryCalls === 2;
             let emitted = false;
             return {
                 next: () => {
@@ -464,9 +463,7 @@ it('should clean up the export iterator when the response stream is cancelled', 
                     return { done: false as const, value: new TextEncoder().encode('{"ok":true}') };
                 },
                 return: () => {
-                    if (streamIterator) {
-                        streamedIteratorCleanups += 1;
-                    }
+                    streamedIteratorCleanups += 1;
                     return { done: true as const, value: undefined };
                 },
             };
@@ -481,7 +478,7 @@ it('should clean up the export iterator when the response stream is cancelled', 
     );
 
     await response.body?.cancel();
-    expect(factoryCalls).toBe(2);
+    expect(factoryCalls).toBe(1);
     expect(streamedIteratorCleanups).toBe(1);
 });
 

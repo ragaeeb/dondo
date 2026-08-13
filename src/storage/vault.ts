@@ -122,6 +122,7 @@ export const VAULT_LOCK_TIMEOUT_MS = 2_000;
 
 const VAULT_LOCK_RETRY_MS = 25;
 const VAULT_LOCK_STALE_MS = 2 * 60 * 1000;
+const VAULT_LOCK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const VAULT_RECOVERY_INVALID_STALE_MS = 250;
 
 const vaultQueues = new Map<string, Promise<void>>();
@@ -445,7 +446,9 @@ const staleLock = async (lockPath: string, invalidStaleMs = VAULT_LOCK_STALE_MS)
         }
         const metadata = JSON.parse(metadataText ?? '{}') as LockSnapshot;
         const pid = lockOwnerPid(metadata);
-        const stale = pid === undefined ? Date.now() - after.mtimeMs > invalidStaleMs : !processIsAlive(pid);
+        const ageMs = Date.now() - after.mtimeMs;
+        const stale =
+            ageMs > VAULT_LOCK_MAX_AGE_MS || (pid === undefined ? ageMs > invalidStaleMs : !processIsAlive(pid));
         return stale ? after : null;
     } catch (error) {
         if (errorCode(error) === 'ENOENT') {
@@ -906,7 +909,9 @@ const encodeSection = async <Platform extends VaultPlatform>(
         );
     }
     const preservedDamage = Object.fromEntries(
-        Object.entries(damaged).filter(([accountKey]) => section.corruptions?.[accountKey]),
+        Object.entries(damaged).filter(
+            ([accountKey]) => section.corruptions?.[accountKey] && !Object.hasOwn(encrypted, accountKey),
+        ),
     );
     return {
         data: { ...encrypted, ...preservedDamage },

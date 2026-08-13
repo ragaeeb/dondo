@@ -580,7 +580,7 @@ it('should not expose hostile Antigravity upstream error messages', async () => 
 
     expect(error).toContain('HTTP 500');
     expect(error).not.toContain('secret-provider-value');
-    expect(error).not.toContain('not-an-allowlisted-status');
+    expect(error).not.toContain('SECRET_PROVIDER_TOKEN_VALUE');
 });
 
 it('should cap failed Antigravity OAuth refresh attempts and duration', async () => {

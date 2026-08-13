@@ -1,6 +1,14 @@
 export const MAX_HTTP_RESPONSE_BYTES = 1024 * 1024;
 
-const sizeError = (label: string) => new Error(`${label} response exceeded the 1 MiB size limit`);
+const sizeLabel = (maxBytes: number) => {
+    if (maxBytes > 0 && maxBytes % (1024 * 1024) === 0) {
+        return `${maxBytes / (1024 * 1024)} MiB`;
+    }
+    return `${maxBytes} ${maxBytes === 1 ? 'byte' : 'bytes'}`;
+};
+
+const sizeError = (label: string, maxBytes: number) =>
+    new Error(`${label} response exceeded the ${sizeLabel(maxBytes)} size limit`);
 const invalidUtf8Error = (label: string) => new Error(`${label} response was not valid UTF-8`);
 
 const assertMaxBytes = (maxBytes: number) => {
@@ -23,7 +31,7 @@ export const readBoundedResponseText = async (
     const contentLength = contentLengthHeader === null ? Number.NaN : Number(contentLengthHeader);
     if (Number.isSafeInteger(contentLength) && contentLength >= 0 && contentLength > maxBytes) {
         await discardResponse(response);
-        throw sizeError(label);
+        throw sizeError(label, maxBytes);
     }
     if (!response.body) {
         return '';
@@ -47,7 +55,7 @@ export const readBoundedResponseText = async (
             size += value.byteLength;
             if (size > maxBytes) {
                 await reader.cancel().catch(() => {});
-                throw sizeError(label);
+                throw sizeError(label, maxBytes);
             }
             try {
                 chunks.push(decoder.decode(value, { stream: true }));

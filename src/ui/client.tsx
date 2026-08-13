@@ -4,6 +4,7 @@ import packageJson from '../../package.json';
 import type { LimitResult, ModelLimit } from '../types.ts';
 import { chooseExportDestination, downloadPlatformExport } from './export.ts';
 import { runWithOperationLock } from './operation.ts';
+import { responseErrorMessage } from './response.ts';
 import { type PlatformTab, pathForTab, platformTabs, tabFromPath } from './routes.ts';
 
 type AccountEntry = {
@@ -18,32 +19,12 @@ type AccountEntry = {
 
 type AccountState = {
     entries: AccountEntry[];
-};
-
-type AntigravityState = AccountState & {
-    account: string;
-    service: string;
     vaultPath: string;
-};
-
-type CodexState = AccountState & {
-    authPath: string;
-    vaultPath: string;
-};
-
-type ClineState = AccountState & {
-    providersPath: string;
-    vaultPath: string;
-};
-
-type KiroState = AccountState & {
-    authPath: string;
-    vaultPath: string;
-};
-
-type MinimaxState = AccountState & {
-    configPath: string;
-    vaultPath: string;
+    account?: string;
+    authPath?: string;
+    configPath?: string;
+    providersPath?: string;
+    service?: string;
 };
 
 type MinimaxCheckInResult = {
@@ -125,9 +106,6 @@ type PanelViewProps<State extends AccountState> = {
 const CORRUPTED_ENTRY_MESSAGE = 'Saved account data is corrupted. Delete it and save it again.';
 const UNKNOWN_ERROR_MESSAGE = 'Something went wrong. Please try again.';
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-    typeof value === 'object' && value !== null && !Array.isArray(value);
-
 const errorMessage = (error: unknown) => {
     if (error instanceof Error && error.message.trim()) {
         return error.message;
@@ -136,13 +114,6 @@ const errorMessage = (error: unknown) => {
         return error;
     }
     return UNKNOWN_ERROR_MESSAGE;
-};
-
-const responseErrorMessage = (payload: unknown, response: Response) => {
-    if (isRecord(payload) && typeof payload.error === 'string' && payload.error.trim()) {
-        return payload.error;
-    }
-    return response.statusText || `Request failed with status ${response.status}`;
 };
 
 const api = async <T,>(path: string, body?: unknown): Promise<T> => {
@@ -538,8 +509,8 @@ const PlatformAccountPanel = <State extends AccountState>({
         nextOperation: Operation,
         pendingStatus: string,
         task: () => Promise<string | undefined>,
-    ) => {
-        await runWithOperationLock(operationLock, async () => {
+    ): Promise<boolean> => {
+        const started = runWithOperationLock(operationLock, async () => {
             setOperation(nextOperation);
             setMessage(pendingStatus);
             try {
@@ -550,6 +521,11 @@ const PlatformAccountPanel = <State extends AccountState>({
                 setOperation(null);
             }
         });
+        if (!started) {
+            return false;
+        }
+        await started;
+        return true;
     };
 
     const save = (event: Event) => {
@@ -661,10 +637,24 @@ const PlatformAccountPanel = <State extends AccountState>({
         if (!active || loaded) {
             return;
         }
-        void runOperation({ kind: 'initial-load' }, 'Loading accounts...', async () => {
-            await fetchState('state');
-            return '';
-        });
+        let cancelled = false;
+        const attempt = () => {
+            if (cancelled) {
+                return;
+            }
+            void runOperation({ kind: 'initial-load' }, 'Loading accounts...', async () => {
+                await fetchState('state');
+                return '';
+            }).then((started) => {
+                if (!started && !cancelled) {
+                    window.setTimeout(attempt, 50);
+                }
+            });
+        };
+        attempt();
+        return () => {
+            cancelled = true;
+        };
     }, [active, loaded]);
 
     return (
@@ -690,42 +680,42 @@ const PlatformAccountPanel = <State extends AccountState>({
     );
 };
 
-const ANTIGRAVITY_CONFIG: PanelConfig<AntigravityState> = {
+const ANTIGRAVITY_CONFIG: PanelConfig<AccountState> = {
     clear: {
         confirmation: 'Clear the live Antigravity keychain item and local auth state?',
         placement: 'form',
         successStatus: 'Cleared live Antigravity auth state',
     },
-    describeState: (state) => `${state.service}/${state.account} · ${state.vaultPath}`,
+    describeState: (state) => `${state.service ?? ''}/${state.account ?? ''} · ${state.vaultPath}`,
     displayName: 'Antigravity',
     limits: true,
     platform: 'antigravity',
     syncResource: 'auth',
 };
 
-const CODEX_CONFIG: PanelConfig<CodexState> = {
-    describeState: (state) => `${state.authPath} · ${state.vaultPath}`,
+const CODEX_CONFIG: PanelConfig<AccountState> = {
+    describeState: (state) => `${state.authPath ?? ''} · ${state.vaultPath}`,
     displayName: 'Codex',
     limits: true,
     platform: 'codex',
     syncResource: 'auth',
 };
 
-const CLINE_CONFIG: PanelConfig<ClineState> = {
-    describeState: (state) => `${state.providersPath} · ${state.vaultPath}`,
+const CLINE_CONFIG: PanelConfig<AccountState> = {
+    describeState: (state) => `${state.providersPath ?? ''} · ${state.vaultPath}`,
     displayName: 'Cline',
     platform: 'cline',
     syncResource: 'auth',
 };
 
-const KIRO_CONFIG: PanelConfig<KiroState> = {
+const KIRO_CONFIG: PanelConfig<AccountState> = {
     clear: {
         confirmation:
             'Is Kiro fully quit, and did you save the current account? Dondo will remove its local login files without remotely signing out.',
         placement: 'toolbar',
         successStatus: 'Cleared live Kiro auth. Reopen Kiro to sign in.',
     },
-    describeState: (state) => `${state.authPath} · ${state.vaultPath}`,
+    describeState: (state) => `${state.authPath ?? ''} · ${state.vaultPath}`,
     displayName: 'Kiro',
     instructions:
         'While signed in, save the current account. Then fully quit Kiro and use Clear live. Reopen Kiro, sign into the next account, and save it. To switch later, quit Kiro, load an account here, then reopen Kiro.',
@@ -748,8 +738,8 @@ const minimaxCheckIn = async () => {
     return 'MiniMax check-in is not available yet';
 };
 
-const MINIMAX_CONFIG: PanelConfig<MinimaxState> = {
-    describeState: (state) => `${state.configPath} · ${state.vaultPath}`,
+const MINIMAX_CONFIG: PanelConfig<AccountState> = {
+    describeState: (state) => `${state.configPath ?? ''} · ${state.vaultPath}`,
     displayName: 'MiniMax',
     limits: true,
     platform: 'minimax',
@@ -764,6 +754,14 @@ const MINIMAX_CONFIG: PanelConfig<MinimaxState> = {
             run: minimaxCheckIn,
         },
     ],
+};
+
+const PANEL_CONFIGS: Record<PlatformTab, PanelConfig<AccountState>> = {
+    antigravity: ANTIGRAVITY_CONFIG,
+    cline: CLINE_CONFIG,
+    codex: CODEX_CONFIG,
+    kiro: KIRO_CONFIG,
+    minimax: MINIMAX_CONFIG,
 };
 
 const App = () => {
@@ -804,11 +802,9 @@ const App = () => {
                     </button>
                 ))}
             </nav>
-            <PlatformAccountPanel active={tab === 'antigravity'} config={ANTIGRAVITY_CONFIG} />
-            <PlatformAccountPanel active={tab === 'codex'} config={CODEX_CONFIG} />
-            <PlatformAccountPanel active={tab === 'cline'} config={CLINE_CONFIG} />
-            <PlatformAccountPanel active={tab === 'kiro'} config={KIRO_CONFIG} />
-            <PlatformAccountPanel active={tab === 'minimax'} config={MINIMAX_CONFIG} />
+            {platformTabs.map((item) => (
+                <PlatformAccountPanel key={item.id} active={tab === item.id} config={PANEL_CONFIGS[item.id]} />
+            ))}
             <footer class="footer">
                 <a href={packageJson.homepage} target="_blank" rel="noreferrer">
                     GitHub

@@ -211,6 +211,7 @@ bun run lint
 bun run typecheck
 bun test
 bun run build
+bun build src/server.ts --target=bun --outdir /tmp/dondo-build
 ```
 
 `bun run lint` checks formatting, lint rules, and import/key-order assists with warnings treated as failures.

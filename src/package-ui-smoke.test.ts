@@ -92,7 +92,7 @@ describe('packaged UI smoke', () => {
         try {
             await runCommand(['bun', 'pm', 'pack', '--destination', tempDir], process.cwd());
             const tarball = packageTarballPath(tempDir, manifest);
-            const { stdoutText: packedEntries } = await runCommand(['/usr/bin/tar', '-tzf', tarball], tempDir);
+            const { stdoutText: packedEntries } = await runCommand(['tar', '-tzf', tarball], tempDir);
             expect(packedEntries).toContain('package/scripts/build.ts');
             expect(packedEntries).toContain('package/scripts/dev.ts');
             expect(packedEntries).not.toContain('.test.ts');

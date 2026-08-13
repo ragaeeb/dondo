@@ -66,7 +66,7 @@ it('should reject and cancel a streamed response above the byte limit', async ()
     );
 
     await expect(readBoundedResponseText(response, 'Provider', 4)).rejects.toThrow(
-        'Provider response exceeded the 1 MiB size limit',
+        'Provider response exceeded the 4 bytes size limit',
     );
     expect(cancelled).toBe(true);
 });
@@ -81,7 +81,9 @@ it('should reject declared oversized responses and cancel without reading', asyn
         }),
         { headers: { 'content-length': '5' } },
     );
-    await expect(readBoundedResponseText(response, 'Provider', 4)).rejects.toThrow('size limit');
+    await expect(readBoundedResponseText(response, 'Provider', 4)).rejects.toThrow(
+        'Provider response exceeded the 4 bytes size limit',
+    );
     expect(cancelled).toBe(true);
 });
 

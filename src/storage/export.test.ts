@@ -324,13 +324,13 @@ it('should reject malformed JSON configs without returning their contents', asyn
 
 it('should reject decrypted configs that are valid JSON but invalid for their platform', async () => {
     const cases = [
-        ['cline', { secrets: '{}' }],
-        ['codex', { auth: JSON.stringify({ auth_mode: 'apikey' }) }],
-        ['kiro', { auth: JSON.stringify({ refreshToken: '' }) }],
-        ['minimax', { config: JSON.stringify({ tokens: { accessToken: 'not-a-jwt' } }) }],
+        ['cline', 'Cline', { secrets: '{}' }],
+        ['codex', 'Codex', { auth: JSON.stringify({ auth_mode: 'apikey' }) }],
+        ['kiro', 'Kiro', { auth: JSON.stringify({ refreshToken: '' }) }],
+        ['minimax', 'MiniMax', { config: JSON.stringify({ tokens: { accessToken: 'not-a-jwt' } }) }],
     ] as const;
 
-    for (const [platform, secretFields] of cases) {
+    for (const [platform, displayName, secretFields] of cases) {
         const { dir, path } = await tempVaultPath();
         try {
             await updateVaultSection(
@@ -351,9 +351,7 @@ it('should reject decrypted configs that are valid JSON but invalid for their pl
 
             const exported = await exportPlatformWallet(platform, path, TEST_KEY);
             expect(() => materializeWallet(exported)).toThrow(
-                `Saved ${platform === 'minimax' ? 'MiniMax' : platform[0]?.toUpperCase()}${
-                    platform === 'minimax' ? '' : platform.slice(1)
-                } config for "broken" is invalid or incomplete`,
+                `Saved ${displayName} config for "broken" is invalid or incomplete`,
             );
         } finally {
             await rm(dir, { force: true, recursive: true });

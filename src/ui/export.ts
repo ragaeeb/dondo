@@ -1,3 +1,4 @@
+import { isRecord, responseErrorMessage } from './response.ts';
 import type { PlatformTab } from './routes.ts';
 
 type SaveFilePickerOptions = {
@@ -47,18 +48,8 @@ const browserDependencies: ExportDependencies = {
     },
 };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-    typeof value === 'object' && value !== null && !Array.isArray(value);
-
 const isExportFileHandle = (value: unknown): value is ExportFileHandle =>
     isRecord(value) && typeof value.createWritable === 'function';
-
-const responseErrorMessage = (payload: unknown, response: Response) => {
-    if (isRecord(payload) && typeof payload.error === 'string' && payload.error.trim()) {
-        return payload.error;
-    }
-    return response.statusText || `Request failed with status ${response.status}`;
-};
 
 const exportFilename = (response: Response, platform: PlatformTab) => {
     const disposition = response.headers.get('content-disposition') ?? '';
@@ -69,14 +60,17 @@ const exportFilename = (response: Response, platform: PlatformTab) => {
 };
 
 const validateExportResponse = async (response: Response) => {
+    const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
     if (!response.ok) {
         let payload: unknown;
-        if ((response.headers.get('content-type') ?? '').includes('application/json')) {
+        if (contentType.includes('application/json')) {
             payload = await response.json().catch(() => null);
+        } else {
+            await response.body?.cancel().catch(() => undefined);
         }
         throw new Error(responseErrorMessage(payload, response));
     }
-    if (!(response.headers.get('content-type') ?? '').toLowerCase().startsWith('application/json')) {
+    if (!contentType.startsWith('application/json')) {
         await response.body?.cancel().catch(() => undefined);
         throw new Error('Export response was not JSON');
     }

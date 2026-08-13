@@ -247,38 +247,38 @@ const isPortInUse = (error: unknown) => {
     return value?.code === 'EADDRINUSE';
 };
 
-const exportByteLength = (wallet: ExportWalletResult, iteratorFactory: ExportByteIteratorFactory) => {
+const collectExportChunks = (wallet: ExportWalletResult, iteratorFactory: ExportByteIteratorFactory) => {
     const iterator = iteratorFactory(wallet);
+    const chunks: Uint8Array[] = [];
     let total = 0;
     try {
         for (;;) {
             const next = iterator.next();
             if (next.done) {
-                return total;
+                return { chunks, contentLength: total };
             }
             total += next.value.byteLength;
             if (total > MAX_EXPORT_PAYLOAD_BYTES) {
                 throw publicError(413, 'Export payload exceeds the 8 MiB size limit');
             }
+            chunks.push(next.value.slice());
         }
     } finally {
         iterator.return?.();
     }
 };
 
-const exportStream = (wallet: ExportWalletResult, iteratorFactory: ExportByteIteratorFactory) => {
-    const iterator = iteratorFactory(wallet);
+const exportStream = (chunks: readonly Uint8Array[]) => {
+    let index = 0;
     return new ReadableStream<Uint8Array>({
-        cancel: () => {
-            iterator.return?.();
-        },
         pull: (controller) => {
-            const next = iterator.next();
-            if (next.done) {
+            const chunk = chunks[index];
+            if (!chunk) {
                 controller.close();
                 return;
             }
-            controller.enqueue(next.value);
+            index += 1;
+            controller.enqueue(chunk);
         },
     });
 };
@@ -286,8 +286,8 @@ const exportStream = (wallet: ExportWalletResult, iteratorFactory: ExportByteIte
 const exportJson = async (platform: ExportPlatform, dependencies: ServerDependencies) => {
     const filename = `dondo-${platform}-wallet-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
     const wallet = await dependencies.exportWallet(platform);
-    const contentLength = exportByteLength(wallet, dependencies.exportByteIterator);
-    return withHeaders(new Response(exportStream(wallet, dependencies.exportByteIterator)), {
+    const { chunks, contentLength } = collectExportChunks(wallet, dependencies.exportByteIterator);
+    return withHeaders(new Response(exportStream(chunks)), {
         'Cache-Control': 'no-store',
         'Content-Disposition': `attachment; filename="${filename}"`,
         'Content-Length': String(contentLength),

@@ -66,6 +66,18 @@ it('should reject Kiro usage when no positive limit is available', () => {
     });
 });
 
+it('should omit invalid or oversized Kiro reset timestamps', () => {
+    const result = usageToLimitResult({
+        nextDateReset: Number.MAX_VALUE,
+        usageBreakdownList: [{ currentUsage: 1, resourceType: 'CREDIT', usageLimit: 10 }],
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+        expect(result.models.credit?.resetTime).toBe('');
+    }
+});
+
 it('should fail cleanly for hostile Kiro usage field types', () => {
     expect(
         usageToLimitResult({

@@ -112,6 +112,23 @@ describe('platform export download', () => {
         expect(cancelled).toBe(true);
     });
 
+    it('cancels a non-JSON error response before reporting its status', async () => {
+        let cancelled = false;
+        const response = new Response(
+            new ReadableStream<Uint8Array>({
+                cancel: () => {
+                    cancelled = true;
+                },
+            }),
+            { headers: { 'Content-Type': 'text/plain' }, status: 502, statusText: 'Bad Gateway' },
+        );
+
+        await expect(downloadPlatformExport('codex', { kind: 'blob' }, dependencies(response))).rejects.toThrow(
+            'Bad Gateway',
+        );
+        expect(cancelled).toBe(true);
+    });
+
     it('uses the Blob fallback and always schedules Object URL cleanup', async () => {
         const events: string[] = [];
         const deps = {

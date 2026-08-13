@@ -196,21 +196,22 @@ export const minimaxState = async (options: { refreshLimitKey?: string; refreshL
                   return { result: current, write: changed };
               });
     const activeConfig = parseConfig(await liveConfig().catch(() => ''));
-    const healthyEntries = Object.entries(section.data)
-        .filter(([, saved]) => isReadableSnapshot(saved))
-        .map(([key, saved]: [string, MinimaxSnapshot]) => {
+    const parsedEntries = Object.entries(section.data).map(
+        ([key, saved]) => [key, saved, parseConfig(saved.config)] as const,
+    );
+    const healthyEntries = parsedEntries
+        .filter(([, , config]) => config !== null)
+        .map(([key, saved, config]) => {
             const cached = section.limits[key];
             return {
-                active: isSameConfig(activeConfig, parseConfig(saved.config)),
+                active: isSameConfig(activeConfig, config),
                 key,
                 limitUpdatedAt: cached?.fetchedAt ?? '',
                 quota: cached?.quota ?? null,
                 updatedAt: saved.updatedAt,
             };
         });
-    const semanticCorruptions = Object.entries(section.data)
-        .filter(([, saved]) => !isReadableSnapshot(saved))
-        .map(([key]) => key);
+    const semanticCorruptions = parsedEntries.filter(([, , config]) => config === null).map(([key]) => key);
     const corruptedEntries = [...Object.keys(section.corruptions ?? {}), ...semanticCorruptions].map((key) => ({
         active: false,
         corrupted: true as const,

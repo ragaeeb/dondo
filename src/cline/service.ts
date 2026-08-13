@@ -119,14 +119,13 @@ export const clineState = async () => {
     const section = await readVaultSection('cline');
     const current = await liveFile().catch(() => null);
     const activeAccount = current ? (parseClineProviders(current.text)?.account ?? null) : null;
-    const healthyEntries = Object.entries(section.data)
-        .filter(([, snap]) => isReadableSnapshot(snap))
-        .map(([key, snap]: [string, ClineSnapshot]) =>
-            entry(key, snap, isSameAccount(activeAccount, parseClineProviders(snap.secrets)?.account ?? null)),
-        );
-    const semanticCorruptions = Object.entries(section.data)
-        .filter(([, snap]) => !isReadableSnapshot(snap))
-        .map(([key]) => key);
+    const parsedEntries = Object.entries(section.data).map(
+        ([key, snap]) => [key, snap, parseClineProviders(snap.secrets)] as const,
+    );
+    const healthyEntries = parsedEntries
+        .filter(([, , account]) => account !== null)
+        .map(([key, snap, account]) => entry(key, snap, isSameAccount(activeAccount, account?.account ?? null)));
+    const semanticCorruptions = parsedEntries.filter(([, , account]) => account === null).map(([key]) => key);
     const corruptedEntries = [...Object.keys(section.corruptions ?? {}), ...semanticCorruptions].map((key) => ({
         active: false,
         corrupted: true as const,

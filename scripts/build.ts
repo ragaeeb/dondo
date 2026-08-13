@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, rename, rm } from 'node:fs/promises';
+import { mkdir, rename, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +36,8 @@ const prepareOutput = async (outdir: string) => {
 
 export const buildDistribution = async (outdir = DEFAULT_OUTDIR) => {
     const { resolved, staged } = await prepareOutput(outdir);
+    const backup = join(dirname(resolved), `.dist-${process.pid}-${randomUUID()}.backup`);
+    let hasBackup = false;
     try {
         const ui = assertBuild(
             'Browser build',
@@ -64,11 +66,40 @@ export const buildDistribution = async (outdir = DEFAULT_OUTDIR) => {
                 target: 'bun',
             }),
         );
-        await rm(resolved, { force: true, recursive: true });
-        await rename(staged, resolved);
+        await rm(backup, { force: true, recursive: true });
+        try {
+            await stat(resolved);
+            await rename(resolved, backup);
+            hasBackup = true;
+        } catch (error) {
+            if ((error as { code?: unknown }).code !== 'ENOENT') {
+                throw error;
+            }
+        }
+        try {
+            await rename(staged, resolved);
+        } catch (error) {
+            await rm(staged, { force: true, recursive: true });
+            if (hasBackup) {
+                await rm(resolved, { force: true, recursive: true });
+                await rename(backup, resolved);
+                hasBackup = false;
+            }
+            throw error;
+        }
+        if (hasBackup) {
+            await rm(backup, { force: true, recursive: true });
+            hasBackup = false;
+        }
     } catch (error) {
         await rm(staged, { force: true, recursive: true });
+        if (hasBackup) {
+            await rm(resolved, { force: true, recursive: true });
+            await rename(backup, resolved);
+        }
         throw error;
+    } finally {
+        await rm(backup, { force: true, recursive: true }).catch(() => {});
     }
 };
 

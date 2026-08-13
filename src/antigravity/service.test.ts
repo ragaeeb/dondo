@@ -1,5 +1,23 @@
 import { expect, it } from 'bun:test';
 
+const runAntigravityScript = async (script: string, env: Record<string, string> = {}) => {
+    const proc = Bun.spawn([process.execPath, '--eval', script], {
+        cwd: process.cwd(),
+        env: { ...process.env, ANTIGRAVITY_PROCESS_NAME: 'dondo-antigravity-test-not-running', ...env },
+        stderr: 'pipe',
+        stdout: 'pipe',
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+    ]);
+    if (exitCode !== 0) {
+        throw new Error(stderr);
+    }
+    return JSON.parse(stdout) as unknown;
+};
+
 it('should preserve Antigravity account creation time when replacing a healthy row', async () => {
     const script = `
         const { mock } = await import('bun:test');
@@ -34,21 +52,7 @@ it('should preserve Antigravity account creation time when replacing a healthy r
             updatedAt: section.data.saved.updatedAt,
         }));
     `;
-    const proc = Bun.spawn([process.execPath, '--eval', script], {
-        cwd: process.cwd(),
-        env: { ...process.env, ANTIGRAVITY_PROCESS_NAME: 'dondo-antigravity-test-not-running' },
-        stderr: 'pipe',
-        stdout: 'pipe',
-    });
-    const [exitCode, stdout, stderr] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-    ]);
-    if (exitCode !== 0) {
-        throw new Error(stderr);
-    }
-    expect(JSON.parse(stdout)).toEqual({ createdAt: 'original-created', updatedAt: 'new-updated' });
+    expect(await runAntigravityScript(script)).toEqual({ createdAt: 'original-created', updatedAt: 'new-updated' });
 });
 
 it('should reject an inert live Antigravity credential before writing the vault', async () => {
@@ -74,21 +78,7 @@ it('should reject an inert live Antigravity credential before writing the vault'
         const error = await saveAntigravity('saved').catch((value) => String(value));
         console.log(JSON.stringify({ error, wrote }));
     `;
-    const proc = Bun.spawn([process.execPath, '--eval', script], {
-        cwd: process.cwd(),
-        env: { ...process.env, ANTIGRAVITY_PROCESS_NAME: 'dondo-antigravity-test-not-running' },
-        stderr: 'pipe',
-        stdout: 'pipe',
-    });
-    const [exitCode, stdout, stderr] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-    ]);
-    if (exitCode !== 0) {
-        throw new Error(stderr);
-    }
-    expect(JSON.parse(stdout)).toEqual({
+    expect(await runAntigravityScript(script)).toEqual({
         error: 'Error: Current Antigravity credential payload is invalid',
         wrote: false,
     });
@@ -122,21 +112,7 @@ it('should clear stale Antigravity state before restoring the replacement creden
         await loadAntigravity('saved');
         console.log(JSON.stringify(calls));
     `;
-    const proc = Bun.spawn([process.execPath, '--eval', script], {
-        cwd: process.cwd(),
-        env: { ...process.env, ANTIGRAVITY_PROCESS_NAME: 'dondo-antigravity-test-not-running' },
-        stderr: 'pipe',
-        stdout: 'pipe',
-    });
-    const [exitCode, stdout, stderr] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-    ]);
-    if (exitCode !== 0) {
-        throw new Error(stderr);
-    }
-    expect(JSON.parse(stdout)).toEqual(['clear', 'replace']);
+    expect(await runAntigravityScript(script)).toEqual(['clear', 'replace']);
 });
 
 it('should leave the Antigravity credential untouched when stale-state cleanup fails', async () => {
@@ -162,21 +138,7 @@ it('should leave the Antigravity credential untouched when stale-state cleanup f
         const error = await loadAntigravity('saved').catch((value) => String(value));
         console.log(JSON.stringify({ error, restored }));
     `;
-    const proc = Bun.spawn([process.execPath, '--eval', script], {
-        cwd: process.cwd(),
-        env: { ...process.env, ANTIGRAVITY_PROCESS_NAME: 'dondo-antigravity-test-not-running' },
-        stderr: 'pipe',
-        stdout: 'pipe',
-    });
-    const [exitCode, stdout, stderr] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-    ]);
-    if (exitCode !== 0) {
-        throw new Error(stderr);
-    }
-    expect(JSON.parse(stdout)).toEqual({ error: 'Error: cleanup failed', restored: false });
+    expect(await runAntigravityScript(script)).toEqual({ error: 'Error: cleanup failed', restored: false });
 });
 
 it('should reject tampered Antigravity keychain metadata without clearing or restoring', async () => {
@@ -202,21 +164,7 @@ it('should reject tampered Antigravity keychain metadata without clearing or res
         const error = await loadAntigravity('saved').catch((value) => String(value));
         console.log(JSON.stringify({ calls, error }));
     `;
-    const proc = Bun.spawn([process.execPath, '--eval', script], {
-        cwd: process.cwd(),
-        env: { ...process.env, ANTIGRAVITY_PROCESS_NAME: 'dondo-antigravity-test-not-running' },
-        stderr: 'pipe',
-        stdout: 'pipe',
-    });
-    const [exitCode, stdout, stderr] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-    ]);
-    if (exitCode !== 0) {
-        throw new Error(stderr);
-    }
-    expect(JSON.parse(stdout)).toEqual({ calls: [], error: 'Error: Saved account data is corrupted' });
+    expect(await runAntigravityScript(script)).toEqual({ calls: [], error: 'Error: Saved account data is corrupted' });
 });
 
 it('should reject replacing a semantic-invalid saved Antigravity account', async () => {
@@ -250,21 +198,10 @@ it('should reject replacing a semantic-invalid saved Antigravity account', async
         const error = await saveAntigravity('saved').catch((value) => String(value));
         console.log(JSON.stringify({ error, unchanged: section.data.saved.password !== valid.password }));
     `;
-    const proc = Bun.spawn([process.execPath, '--eval', script], {
-        cwd: process.cwd(),
-        env: { ...process.env, ANTIGRAVITY_PROCESS_NAME: 'dondo-antigravity-test-not-running' },
-        stderr: 'pipe',
-        stdout: 'pipe',
+    expect(await runAntigravityScript(script)).toEqual({
+        error: 'Error: Saved account data is corrupted',
+        unchanged: true,
     });
-    const [exitCode, stdout, stderr] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-    ]);
-    if (exitCode !== 0) {
-        throw new Error(stderr);
-    }
-    expect(JSON.parse(stdout)).toEqual({ error: 'Error: Saved account data is corrupted', unchanged: true });
 });
 
 it('should reject Antigravity load and clear while the app is running', async () => {
@@ -287,21 +224,7 @@ it('should reject Antigravity load and clear while the app is running', async ()
         const clearError = await clearAntigravity().catch((value) => String(value));
         console.log(JSON.stringify({ calls, clearError, loadError }));
     `;
-    const proc = Bun.spawn([process.execPath, '--eval', script], {
-        cwd: process.cwd(),
-        env: { ...process.env, ANTIGRAVITY_PROCESS_NAME: '-hostile-name' },
-        stderr: 'pipe',
-        stdout: 'pipe',
-    });
-    const [exitCode, stdout, stderr] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-    ]);
-    if (exitCode !== 0) {
-        throw new Error(stderr);
-    }
-    expect(JSON.parse(stdout)).toEqual({
+    expect(await runAntigravityScript(script, { ANTIGRAVITY_PROCESS_NAME: '-hostile-name' })).toEqual({
         calls: [],
         clearError:
             'Error: Quit Antigravity completely before clearing or loading an account. Antigravity must be closed while Dondo replaces its local login state.',
@@ -342,21 +265,7 @@ it('should serialize overlapping Antigravity live-state operations', async () =>
         await Promise.all([loadAntigravity('first'), loadAntigravity('second')]);
         console.log(JSON.stringify({ calls, maximumActive }));
     `;
-    const proc = Bun.spawn([process.execPath, '--eval', script], {
-        cwd: process.cwd(),
-        env: { ...process.env, ANTIGRAVITY_PROCESS_NAME: 'dondo-antigravity-test-not-running' },
-        stderr: 'pipe',
-        stdout: 'pipe',
-    });
-    const [exitCode, stdout, stderr] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-    ]);
-    if (exitCode !== 0) {
-        throw new Error(stderr);
-    }
-    expect(JSON.parse(stdout)).toEqual({
+    expect(await runAntigravityScript(script)).toEqual({
         calls: ['clear-start', 'clear-end', 'replace', 'clear-start', 'clear-end', 'replace'],
         maximumActive: 1,
     });
@@ -395,19 +304,5 @@ it('should keep the active Antigravity account stable across token rotation', as
         const state = await antigravityState();
         console.log(JSON.stringify(state.entries.filter((entry) => entry.active).map((entry) => entry.key)));
     `;
-    const proc = Bun.spawn([process.execPath, '--eval', script], {
-        cwd: process.cwd(),
-        env: { ...process.env, ANTIGRAVITY_PROCESS_NAME: 'dondo-antigravity-test-not-running' },
-        stderr: 'pipe',
-        stdout: 'pipe',
-    });
-    const [exitCode, stdout, stderr] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-    ]);
-    if (exitCode !== 0) {
-        throw new Error(stderr);
-    }
-    expect(JSON.parse(stdout)).toEqual(['second']);
+    expect(await runAntigravityScript(script)).toEqual(['second']);
 });

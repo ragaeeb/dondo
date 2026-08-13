@@ -4,17 +4,20 @@ import { isProcessRunning } from './process.ts';
 it('terminates pgrep options before a configured process name', async () => {
     const originalSpawn = Bun.spawn;
     let command: string[] = [];
+    let spawnOptions: Record<string, unknown> = {};
     try {
         for (const [exitCode, expected] of [
             [0, true],
             [1, false],
         ] as const) {
-            Bun.spawn = ((args: string[]) => {
+            Bun.spawn = ((args: string[], options: Record<string, unknown>) => {
                 command = args;
+                spawnOptions = options;
                 return { exited: Promise.resolve(exitCode) };
             }) as unknown as typeof Bun.spawn;
             expect(await isProcessRunning('-hostile-name')).toBe(expected);
             expect(command).toEqual(['/usr/bin/pgrep', '-x', '--', '-hostile-name']);
+            expect(spawnOptions.timeout).toBe(5_000);
         }
     } finally {
         Bun.spawn = originalSpawn;

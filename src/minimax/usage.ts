@@ -251,7 +251,7 @@ const signedAgentRequest = async (
         sys_language: 'en',
         timezone_offset: String(-60 * new Date().getTimezoneOffset()),
         token: accessToken,
-        unix: String(timestamp),
+        unix: String(unix),
         user_id: userId,
         uuid,
         version_code: '22201',
@@ -316,14 +316,7 @@ const workspaceState = (payload: WorkspacePayload): WorkspaceState | LimitResult
 export const workspaceToLimitResult = (state: WorkspaceCreditState): LimitResult => {
     return {
         expires: '',
-        models: {
-            'minimax-credits': {
-                detail: `Credit: ${formatCreditBalance(state.creditBalance)}`,
-                displayName: 'Credits',
-                percentage: 100,
-                resetTime: '',
-            },
-        },
+        models: { 'minimax-credits': creditModel(state.creditBalance) },
         ok: true,
         tier: state.hasTokenPlan ? 'MiniMax Code' : 'MiniMax Code · free access',
     };

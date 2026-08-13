@@ -1200,6 +1200,33 @@ it('should not steal an old lock owned by a live Dondo process', async () => {
     }
 });
 
+it('should recover an ancient lock even when its recorded PID is still live', async () => {
+    const { dir, path } = await tempVault();
+    const lockPath = `${path}.lock`;
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    try {
+        await Bun.write(lockPath, JSON.stringify({ createdAt: old.getTime(), pid: process.pid, token: 'ancient' }));
+        await utimes(lockPath, old, old);
+        await updateVaultSection(
+            'codex',
+            (section) => {
+                section.data.recovered = {
+                    auth: '{}',
+                    createdAt: '2026-01-01T00:00:00.000Z',
+                    updatedAt: '2026-01-02T00:00:00.000Z',
+                };
+                return { result: undefined };
+            },
+            path,
+            TEST_KEY,
+        );
+        expect((await readVaultSection('codex', path, TEST_KEY)).data.recovered).toBeDefined();
+        expect(await Bun.file(lockPath).exists()).toBe(false);
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});
+
 it('should not create or replace a vault lock while stale recovery is active', async () => {
     const { dir, path } = await tempVault();
     const lockPath = `${path}.lock`;

@@ -223,24 +223,24 @@ const quotaWithAccessToken = async (accessToken: string, expires: string): Promi
             const data = asObject(await postJson(url, accessToken, project ? { project } : {}));
             const responseModels = asObject(data.models);
             const models = Object.fromEntries(
-                Object.entries(responseModels)
-                    .filter(([, info]) => {
-                        const quotaInfo = asObject(asObject(info).quotaInfo);
-                        return finiteNumber(quotaInfo.remainingFraction) !== undefined;
-                    })
-                    .map(([name, info]) => {
-                        const model = asObject(info);
-                        const quotaInfo = asObject(model.quotaInfo);
-                        const remainingFraction = finiteNumber(quotaInfo.remainingFraction) ?? 0;
-                        return [
+                Object.entries(responseModels).flatMap(([name, info]) => {
+                    const model = asObject(info);
+                    const quotaInfo = asObject(model.quotaInfo);
+                    const remainingFraction = finiteNumber(quotaInfo.remainingFraction);
+                    if (remainingFraction === undefined) {
+                        return [];
+                    }
+                    return [
+                        [
                             name,
                             {
                                 displayName: stringValue(model.displayName) ?? name,
                                 percentage: Math.round(Math.max(0, Math.min(1, remainingFraction)) * 100),
                                 resetTime: stringValue(quotaInfo.resetTime) ?? '',
                             },
-                        ];
-                    }),
+                        ] as const,
+                    ];
+                }),
             );
             if (Object.keys(models).length === 0) {
                 return { error: 'Antigravity quota returned no quota fields', ok: false };

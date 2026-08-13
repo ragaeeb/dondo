@@ -29,6 +29,7 @@ bun run lint
 bun run typecheck
 bun test
 bun run build
+bun build src/server.ts --target=bun --outdir /tmp/dondo-build
 ```
 
 Use `bun run format` for formatting-only writes or `bun run fix` for Biome's safe formatter, lint, and assist fixes.

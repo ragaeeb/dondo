@@ -23,6 +23,13 @@ it('should pass private input over stdin and redact it from subprocess errors', 
     }
 });
 
+it('should handle a subprocess closing stdin before input is written', async () => {
+    await expect(run('bun', ['-e', 'process.exit(0)'], { stdin: 'input-that-may-race-with-exit' })).resolves.toEqual({
+        stderr: '',
+        stdout: '',
+    });
+});
+
 it('should enforce its timeout even when a subprocess ignores SIGTERM', async () => {
     const startedAt = Date.now();
 

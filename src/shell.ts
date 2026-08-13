@@ -66,10 +66,6 @@ export const run = async (cmd: string, args: string[], options: RunOptions = {})
         stdin: options.stdin === undefined ? 'ignore' : 'pipe',
         stdout: 'pipe',
     });
-    if (options.stdin !== undefined && proc.stdin) {
-        proc.stdin.write(options.stdin);
-        proc.stdin.end();
-    }
     const terminate = () => {
         proc.kill('SIGKILL');
     };
@@ -78,10 +74,23 @@ export const run = async (cmd: string, args: string[], options: RunOptions = {})
         timedOut = true;
         terminate();
     }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const stdin = proc.stdin;
+    const stdinWrite =
+        options.stdin !== undefined && stdin
+            ? (async () => {
+                  try {
+                      await stdin.write(options.stdin as string);
+                      await stdin.end();
+                  } catch {
+                      terminate();
+                  }
+              })()
+            : Promise.resolve();
 
-    const [stdout, stderr, code] = await Promise.all([
+    const [stdout, stderr, , code] = await Promise.all([
         captureOutput(proc.stdout, 'Subprocess stdout', terminate),
         captureOutput(proc.stderr, 'Subprocess stderr', terminate),
+        stdinWrite,
         proc.exited,
     ]).finally(() => clearTimeout(timer));
 

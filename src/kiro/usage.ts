@@ -15,9 +15,16 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
 };
 
 const resetIso = (value: unknown) => {
-    const timestamp =
-        typeof value === 'number' ? value * 1_000 : typeof value === 'string' ? Date.parse(value) : Number.NaN;
-    return Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp).toISOString() : '';
+    const date =
+        typeof value === 'number'
+            ? Number.isFinite(value) && value > 0
+                ? new Date(value * 1_000)
+                : new Date(Number.NaN)
+            : typeof value === 'string' && value.trim()
+              ? new Date(value)
+              : new Date(Number.NaN);
+    const timestamp = date.getTime();
+    return Number.isFinite(timestamp) && timestamp > 0 ? date.toISOString() : '';
 };
 
 const usageValue = (value: Record<string, unknown>, precise: string, fallback: string) => {
