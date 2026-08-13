@@ -64,7 +64,6 @@ it('should save and load the current Cline providers file with encrypted vault s
         await Bun.write(
             providersPath,
             JSON.stringify({
-                version: 1,
                 lastUsedProvider: 'cline',
                 providers: {
                     cline: {
@@ -79,6 +78,7 @@ it('should save and load the current Cline providers file with encrypted vault s
                     },
                     sapaicore: { settings: { provider: 'sapaicore' } },
                 },
+                version: 1,
             }),
         );
 
@@ -125,6 +125,211 @@ it('should reject a Cline providers file without an account token', async () => 
             throw new Error(stderr);
         }
         expect(JSON.parse(stdout).error).toContain('Cline account token');
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});
+
+it('should reject malformed optional Cline auth fields', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-cline-malformed-auth-test-'));
+    const providersPath = join(dir, 'providers.json');
+    const vaultPath = join(dir, 'vault.json');
+    const script = `
+        const { saveCline } = await import('./src/cline/service.ts');
+        const error = await saveCline('broken').catch((value) => String(value));
+        console.log(JSON.stringify({ error }));
+    `;
+    try {
+        await Bun.write(
+            providersPath,
+            JSON.stringify({
+                providers: {
+                    cline: { settings: { auth: { accessToken: 'access', refreshToken: 123 }, provider: 'cline' } },
+                },
+            }),
+        );
+        const proc = Bun.spawn([process.execPath, '--eval', script], {
+            cwd: process.cwd(),
+            env: { ...process.env, CLINE_PROVIDERS_PATH: providersPath, DONDO_VAULT: vaultPath },
+            stderr: 'pipe',
+            stdout: 'pipe',
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+            proc.exited,
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+        ]);
+        if (exitCode !== 0) {
+            throw new Error(stderr);
+        }
+        expect(JSON.parse(stdout).error).toContain('Cline account token');
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});
+
+it('should expose semantic-invalid saved Cline providers as deletable corruption', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-cline-semantic-corruption-test-'));
+    const providersPath = join(dir, 'providers.json');
+    const vaultPath = join(dir, 'vault.json');
+    const valid = JSON.stringify({
+        providers: {
+            cline: { settings: { auth: { accessToken: 'access' }, provider: 'cline' } },
+        },
+    });
+    const script = `
+        const { clineState, deleteCline, loadCline, saveCline } = await import('./src/cline/service.ts');
+        const { updateVaultSection } = await import('./src/storage/vault.ts');
+        await saveCline('saved');
+        await updateVaultSection('cline', (section) => {
+            section.data.saved.secrets = '{}';
+            return { result: undefined };
+        });
+        const saveError = await saveCline('saved').catch((error) => String(error));
+        const state = await clineState();
+        const loadError = await loadCline('saved').catch((error) => String(error));
+        await deleteCline('saved');
+        console.log(JSON.stringify({
+            corrupted: state.entries[0]?.corrupted ?? false,
+            deleted: (await clineState()).entries.length === 0,
+            loadError,
+            saveError,
+        }));
+    `;
+    try {
+        await Bun.write(providersPath, valid);
+        const proc = Bun.spawn([process.execPath, '--eval', script], {
+            cwd: process.cwd(),
+            env: { ...process.env, CLINE_PROVIDERS_PATH: providersPath, DONDO_VAULT: vaultPath },
+            stderr: 'pipe',
+            stdout: 'pipe',
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+            proc.exited,
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+        ]);
+        if (exitCode !== 0) {
+            throw new Error(stderr);
+        }
+        expect(JSON.parse(stdout)).toEqual({
+            corrupted: true,
+            deleted: true,
+            loadError: 'Error: Saved account data is corrupted',
+            saveError: 'Error: Saved account data is corrupted',
+        });
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});
+
+it('should keep saved Cline accounts usable when the live providers file is unreadable', async () => {
+    const script = `
+        const { mock } = await import('bun:test');
+        const valid = JSON.stringify({
+            providers: { cline: { settings: { auth: { accessToken: 'saved-access' }, provider: 'cline' } } },
+        });
+        mock.module('./src/storage/file.ts', () => ({
+            readBoundedLocalText: async () => { throw new Error('live providers unreadable'); },
+            writePrivateFile: async () => {},
+        }));
+        mock.module('./src/storage/vault.ts', () => ({
+            readVaultSection: async () => ({
+                data: { saved: { createdAt: '', secrets: valid, updatedAt: 'saved-at' } },
+                limits: {},
+            }),
+            updateVaultSection: async () => undefined,
+        }));
+        const { clineState } = await import('./src/cline/service.ts');
+        const state = await clineState();
+        console.log(JSON.stringify(state.entries));
+    `;
+    const proc = Bun.spawn([process.execPath, '--eval', script], {
+        cwd: process.cwd(),
+        stderr: 'pipe',
+        stdout: 'pipe',
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+    ]);
+    if (exitCode !== 0) {
+        throw new Error(stderr);
+    }
+    expect(JSON.parse(stdout)).toEqual([
+        { active: false, key: 'saved', limitUpdatedAt: '', quota: null, updatedAt: 'saved-at' },
+    ]);
+});
+
+it('should mark a metadata-free opaque Cline token active after saving', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-cline-opaque-test-'));
+    const providersPath = join(dir, 'providers.json');
+    const vaultPath = join(dir, 'vault.json');
+    const script = `
+        const { clineState, saveCline } = await import('./src/cline/service.ts');
+        await saveCline('opaque');
+        const state = await clineState();
+        console.log(JSON.stringify({ active: state.entries[0]?.active ?? false }));
+    `;
+    try {
+        await Bun.write(
+            providersPath,
+            JSON.stringify({ providers: { cline: { settings: { auth: { accessToken: 'opaque-access' } } } } }),
+        );
+        const proc = Bun.spawn([process.execPath, '--eval', script], {
+            cwd: process.cwd(),
+            env: { ...process.env, CLINE_PROVIDERS_PATH: providersPath, DONDO_VAULT: vaultPath },
+            stderr: 'pipe',
+            stdout: 'pipe',
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+            proc.exited,
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+        ]);
+        if (exitCode !== 0) {
+            throw new Error(stderr);
+        }
+        expect(JSON.parse(stdout)).toEqual({ active: true });
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});
+
+it('should treat a hostile non-UTF-8 Cline JWT as an opaque identity', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-cline-hostile-jwt-test-'));
+    const providersPath = join(dir, 'providers.json');
+    const token = `header.${Buffer.from([0xc3, 0x28]).toString('base64url')}.signature`;
+    const script = `
+        const { clineState, saveCline } = await import('./src/cline/service.ts');
+        await saveCline('opaque');
+        console.log(JSON.stringify({ active: (await clineState()).entries[0]?.active ?? false }));
+    `;
+    try {
+        await Bun.write(
+            providersPath,
+            JSON.stringify({ providers: { cline: { settings: { auth: { accessToken: token } } } } }),
+        );
+        const proc = Bun.spawn([process.execPath, '--eval', script], {
+            cwd: process.cwd(),
+            env: {
+                ...process.env,
+                CLINE_PROVIDERS_PATH: providersPath,
+                DONDO_VAULT: join(dir, 'vault.json'),
+            },
+            stderr: 'pipe',
+            stdout: 'pipe',
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+            proc.exited,
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+        ]);
+        if (exitCode !== 0) {
+            throw new Error(stderr);
+        }
+        expect(JSON.parse(stdout)).toEqual({ active: true });
     } finally {
         await rm(dir, { force: true, recursive: true });
     }

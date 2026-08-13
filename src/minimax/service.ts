@@ -1,184 +1,172 @@
+import {
+    boundedMap,
+    CORRUPTED_ACCOUNT_ERROR,
+    selectRefreshEntries,
+    sortAccountEntries,
+    stateVersion,
+} from '../account-state.ts';
 import { MINIMAX_CONFIG_PATH, VAULT_PATH } from '../config.ts';
 import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
-import { writePrivateFile } from '../storage/file.ts';
-import { readVault, updateVault } from '../storage/vault.ts';
-import type { AppVault, LimitCache, MinimaxSnapshot } from '../types.ts';
-import { checkInMiniMax, fetchMiniMaxLimits, miniMaxTokenIdentity, type MiniMaxConfig } from './usage.ts';
+import { readBoundedLocalText, writePrivateFile } from '../storage/file.ts';
+import { readVaultSection, updateVaultSection } from '../storage/vault.ts';
+import type { LimitResult, MinimaxSnapshot, MinimaxVault } from '../types.ts';
+import {
+    checkInMiniMax,
+    fetchMiniMaxLimits,
+    type MiniMaxConfig,
+    miniMaxTokenIdentity,
+    parseMiniMaxConfig,
+} from './usage.ts';
 
-type StoredMinimaxConfig = MiniMaxConfig & {
-    user?: {
-        email?: string;
-        realUserID?: string;
-        userID?: string;
-        userMail?: string;
-        userName?: string;
-        username?: string;
-    };
+type MiniMaxLimitUpdate = {
+    key: string;
+    quota: LimitResult;
+    sourceLimitVersion: string;
+    sourceSnapshotVersion: string;
 };
 
 const liveConfig = async () => {
-    const file = Bun.file(MINIMAX_CONFIG_PATH);
-    return (await file.exists()) ? await file.text() : '';
+    return (await readBoundedLocalText(MINIMAX_CONFIG_PATH)) ?? '';
 };
 
-const parseConfig = (config: string): StoredMinimaxConfig => {
-    try {
-        return JSON.parse(config) as StoredMinimaxConfig;
-    } catch {
-        return {};
-    }
+const parseConfig = (config: string) => {
+    return parseMiniMaxConfig(config);
 };
 
-const stringValue = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
+const identity = (config: MiniMaxConfig | null) => (config ? miniMaxTokenIdentity(config.tokens.accessToken) : '');
 
-const identity = (config: StoredMinimaxConfig) => {
-    return (
-        stringValue(config.tokens?.accessToken ? miniMaxTokenIdentity(config.tokens.accessToken) : '') ??
-        stringValue(config.user?.realUserID) ??
-        stringValue(config.user?.userID) ??
-        stringValue(config.user?.userMail) ??
-        stringValue(config.user?.email) ??
-        stringValue(config.user?.username) ??
-        stringValue(config.user?.userName) ??
-        ''
-    );
-};
-
-const isSameConfig = (a: StoredMinimaxConfig, b: StoredMinimaxConfig) => {
+const isSameConfig = (a: MiniMaxConfig | null, b: MiniMaxConfig | null) => {
     const aIdentity = identity(a);
     const bIdentity = identity(b);
     return Boolean(aIdentity && bIdentity && aIdentity === bIdentity);
 };
 
-const hasLegacyPlaceholderLimit = (vault: AppVault, key: string) => {
-    const quota = vault.minimax.limits[key]?.quota;
-    return quota?.ok && 'minimax-loaded-at' in quota.models;
-};
-
-const hasMislabelledFreeQuotaLimit = (vault: AppVault, key: string) => {
-    const quota = vault.minimax.limits[key]?.quota;
-    if (!quota?.ok) {
-        return false;
-    }
-    const legacyModel = quota.models['minimax-free-daily'] ?? quota.models['minimax-free-access'];
-    return Boolean(legacyModel?.detail?.includes('free daily') || legacyModel?.detail?.includes('numeric allowance'));
-};
-
-const fetchMiniMaxLimitUpdates = async (vault: AppVault, force: boolean, targetKey?: string) => {
-    const updates = new Map<string, LimitCache>();
-    if (targetKey && !vault.minimax.data[targetKey]) {
-        throw publicError(404, `No MiniMax config named ${targetKey}`);
-    }
-    for (const [key, snap] of Object.entries(vault.minimax.data)) {
-        if (
-            (targetKey && key !== targetKey) ||
-            (!force &&
-                vault.minimax.limits[key] &&
-                !hasLegacyPlaceholderLimit(vault, key) &&
-                !hasMislabelledFreeQuotaLimit(vault, key))
-        ) {
+export const invalidateMiniMaxIdentityLimits = (section: MinimaxVault, tokenIdentity: string) => {
+    let changed = false;
+    for (const [key, snapshot] of Object.entries(section.data)) {
+        if (identity(parseConfig(snapshot.config)) !== tokenIdentity || !section.limits[key]) {
             continue;
         }
-        try {
-            updates.set(key, {
-                fetchedAt: new Date().toISOString(),
-                quota: await fetchMiniMaxLimits(parseConfig(snap.config)),
-            });
-        } catch (error) {
-            updates.set(key, { fetchedAt: new Date().toISOString(), quota: cleanLimitError(error) });
-        }
+        delete section.limits[key];
+        changed = true;
     }
+    return changed;
+};
 
-    return updates;
+const isReadableSnapshot = (snapshot: MinimaxSnapshot) => parseConfig(snapshot.config) !== null;
+
+const assertReadableAccount = (section: MinimaxVault, key: string) => {
+    if (section.corruptions?.[key]) {
+        throw publicError(409, CORRUPTED_ACCOUNT_ERROR);
+    }
+    const snapshot = section.data[key];
+    if (!snapshot) {
+        throw publicError(404, `No MiniMax config named ${key}`);
+    }
+    if (!isReadableSnapshot(snapshot)) {
+        throw publicError(409, CORRUPTED_ACCOUNT_ERROR);
+    }
+    return snapshot;
+};
+
+const fetchMiniMaxLimitUpdates = async (section: MinimaxVault, force: boolean, targetKey?: string) => {
+    if (targetKey) {
+        assertReadableAccount(section, targetKey);
+    }
+    const readableData = Object.fromEntries(
+        Object.entries(section.data).filter(([, snapshot]) => isReadableSnapshot(snapshot)),
+    );
+    const selected = selectRefreshEntries(readableData, section.limits, targetKey ? { force, targetKey } : { force });
+    return boundedMap(selected, async ([key, snapshot]): Promise<MiniMaxLimitUpdate> => {
+        const parsed = parseConfig(snapshot.config) as MiniMaxConfig;
+        const quota = await fetchMiniMaxLimits(parsed).catch((error) => cleanLimitError(error));
+        return {
+            key,
+            quota,
+            sourceLimitVersion: stateVersion(section.limits[key] ?? null),
+            sourceSnapshotVersion: stateVersion(snapshot),
+        };
+    });
 };
 
 export const saveMinimax = async (key: string) => {
     const safeKey = assertAccountKey(key);
-    const configFile = Bun.file(MINIMAX_CONFIG_PATH);
-    if (!(await configFile.exists())) {
+    const config = await readBoundedLocalText(MINIMAX_CONFIG_PATH);
+    if (config === null) {
         throw publicError(404, `${MINIMAX_CONFIG_PATH} does not exist`);
     }
-    const config = await configFile.text();
     if (!config.trim()) {
         throw publicError(400, `${MINIMAX_CONFIG_PATH} is empty`);
     }
-    try {
-        JSON.parse(config);
-    } catch {
-        throw publicError(400, `${MINIMAX_CONFIG_PATH} is not valid JSON`);
+    if (!parseConfig(config)) {
+        throw publicError(400, `${MINIMAX_CONFIG_PATH} is not valid MiniMax config JSON`);
     }
 
-    await updateVault(async (vault) => {
-        const existing = vault.minimax.data[safeKey];
+    await updateVaultSection('minimax', (section) => {
+        const existing = section.data[safeKey];
+        if (section.corruptions?.[safeKey] || (existing && !isReadableSnapshot(existing))) {
+            throw publicError(409, CORRUPTED_ACCOUNT_ERROR);
+        }
         const now = new Date().toISOString();
-        vault.minimax.data[safeKey] = {
+        section.data[safeKey] = {
             config,
             createdAt: existing?.createdAt ?? now,
             updatedAt: now,
         };
-        delete vault.minimax.limits[safeKey];
+        delete section.limits[safeKey];
         return { result: undefined };
     });
 };
 
 export const loadMinimax = async (key: string) => {
     const safeKey = assertAccountKey(key);
-    const snap = (await readVault()).minimax.data[safeKey];
-    if (!snap) {
-        throw publicError(404, `No MiniMax config named ${safeKey}`);
-    }
-
-    await writePrivateFile(MINIMAX_CONFIG_PATH, snap.config);
-    await updateVault(async (vault) => {
-        delete vault.minimax.limits[safeKey];
+    const snapshot = assertReadableAccount(await readVaultSection('minimax'), safeKey);
+    await writePrivateFile(MINIMAX_CONFIG_PATH, snapshot.config);
+    await updateVaultSection('minimax', (section) => {
+        const current = section.data[safeKey];
+        if (!current || current.config !== snapshot.config || current.updatedAt !== snapshot.updatedAt) {
+            return { result: undefined, write: false };
+        }
+        delete section.limits[safeKey];
         return { result: undefined };
     });
 };
 
 export const deleteMinimax = async (key: string) => {
     const safeKey = assertAccountKey(key);
-    await updateVault(async (vault) => {
-        if (!vault.minimax.data[safeKey]) {
+    await updateVaultSection('minimax', (section) => {
+        if (!section.data[safeKey] && !section.corruptions?.[safeKey]) {
             throw publicError(404, `No MiniMax config named ${safeKey}`);
         }
-        delete vault.minimax.data[safeKey];
-        delete vault.minimax.limits[safeKey];
+        delete section.data[safeKey];
+        delete section.limits[safeKey];
+        if (section.corruptions) {
+            delete section.corruptions[safeKey];
+        }
         return { result: undefined };
     });
 };
 
 export const checkInMinimax = async (key?: string) => {
     const safeKey = key ? assertAccountKey(key) : undefined;
-    const vault = await readVault();
-    let config = '';
-    let savedKey = safeKey;
+    const section = await readVaultSection('minimax');
+    let configText: string;
 
     if (safeKey) {
-        const snapshot = vault.minimax.data[safeKey];
-        if (!snapshot) {
-            throw publicError(404, `No MiniMax config named ${safeKey}`);
-        }
-        config = snapshot.config;
+        configText = assertReadableAccount(section, safeKey).config;
     } else {
-        config = await liveConfig();
-        const activeEntry = Object.entries(vault.minimax.data).find(([, snapshot]) =>
-            isSameConfig(parseConfig(config), parseConfig(snapshot.config)),
-        );
-        savedKey = activeEntry?.[0];
-        if (!config.trim() && savedKey) {
-            config = vault.minimax.data[savedKey]?.config ?? '';
-        }
+        configText = await liveConfig();
     }
 
-    if (!config.trim()) {
-        throw publicError(404, 'No live MiniMax session found. Sign into MiniMax, then save the account.');
+    const config = parseConfig(configText);
+    if (!config) {
+        throw publicError(404, 'No valid live MiniMax session found. Sign into MiniMax, then save the account.');
     }
-    const result = await checkInMiniMax(parseConfig(config));
-    const keyToInvalidate = savedKey;
-    if (result.claimed && keyToInvalidate) {
-        await updateVault(async (current) => {
-            delete current.minimax.limits[keyToInvalidate];
-            return { result: undefined };
+    const result = await checkInMiniMax(config);
+    const tokenIdentity = identity(config);
+    if (result.claimed && tokenIdentity) {
+        await updateVaultSection('minimax', (current) => {
+            return { result: undefined, write: invalidateMiniMaxIdentityLimits(current, tokenIdentity) };
         });
     }
     return result;
@@ -186,42 +174,56 @@ export const checkInMinimax = async (key?: string) => {
 
 export const minimaxState = async (options: { refreshLimitKey?: string; refreshLimits?: boolean } = {}) => {
     const refreshLimitKey = options.refreshLimitKey ? assertAccountKey(options.refreshLimitKey) : undefined;
-    const snapshot = await readVault();
+    const snapshot = await readVaultSection('minimax');
     const updates = await fetchMiniMaxLimitUpdates(snapshot, options.refreshLimits === true, refreshLimitKey);
-    const vault = await updateVault(async (current) => {
-        if (refreshLimitKey && !current.minimax.data[refreshLimitKey]) {
-            throw publicError(404, `No MiniMax config named ${refreshLimitKey}`);
-        }
-        let changed = false;
-        for (const [key, update] of updates) {
-            if (!current.minimax.data[key]) {
-                continue;
-            }
-            current.minimax.limits[key] = update;
-            changed = true;
-        }
-        return { result: current, write: changed };
-    });
+    const section =
+        updates.length === 0
+            ? snapshot
+            : await updateVaultSection('minimax', (current) => {
+                  let changed = false;
+                  for (const update of updates) {
+                      const saved = current.data[update.key];
+                      if (
+                          !saved ||
+                          stateVersion(saved) !== update.sourceSnapshotVersion ||
+                          stateVersion(current.limits[update.key] ?? null) !== update.sourceLimitVersion
+                      ) {
+                          continue;
+                      }
+                      current.limits[update.key] = { fetchedAt: new Date().toISOString(), quota: update.quota };
+                      changed = true;
+                  }
+                  return { result: current, write: changed };
+              });
     const activeConfig = parseConfig(await liveConfig().catch(() => ''));
+    const healthyEntries = Object.entries(section.data)
+        .filter(([, saved]) => isReadableSnapshot(saved))
+        .map(([key, saved]: [string, MinimaxSnapshot]) => {
+            const cached = section.limits[key];
+            return {
+                active: isSameConfig(activeConfig, parseConfig(saved.config)),
+                key,
+                limitUpdatedAt: cached?.fetchedAt ?? '',
+                quota: cached?.quota ?? null,
+                updatedAt: saved.updatedAt,
+            };
+        });
+    const semanticCorruptions = Object.entries(section.data)
+        .filter(([, saved]) => !isReadableSnapshot(saved))
+        .map(([key]) => key);
+    const corruptedEntries = [...Object.keys(section.corruptions ?? {}), ...semanticCorruptions].map((key) => ({
+        active: false,
+        corrupted: true as const,
+        error: CORRUPTED_ACCOUNT_ERROR,
+        key,
+        limitUpdatedAt: '',
+        quota: null,
+        updatedAt: '',
+    }));
+
     return {
         configPath: MINIMAX_CONFIG_PATH,
-        entries: Object.entries(vault.minimax.data)
-            .map(([key, snap]: [string, MinimaxSnapshot]) => {
-                const cached = vault.minimax.limits[key];
-                return {
-                    active: isSameConfig(activeConfig, parseConfig(snap.config)),
-                    key,
-                    limitUpdatedAt: cached?.fetchedAt ?? '',
-                    quota: cached?.quota ?? null,
-                    updatedAt: snap.updatedAt,
-                };
-            })
-            .sort((a, b) => {
-                if (a.active !== b.active) {
-                    return a.active ? -1 : 1;
-                }
-                return a.key.localeCompare(b.key);
-            }),
+        entries: sortAccountEntries([...healthyEntries, ...corruptedEntries]),
         vaultPath: VAULT_PATH,
     };
 };

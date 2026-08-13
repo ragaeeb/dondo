@@ -2,6 +2,7 @@
     "compilerOptions": {
         "allowImportingTsExtensions": true,
         "esModuleInterop": true,
+        "exactOptionalPropertyTypes": true,
         "forceConsistentCasingInFileNames": true,
         "ignoreDeprecations": "6.0",
         "isolatedModules": true,
@@ -10,6 +11,11 @@
         "module": "preserve",
         "moduleResolution": "bundler",
         "noEmit": true,
+        "noFallthroughCasesInSwitch": true,
+        "noImplicitReturns": true,
+        "noUncheckedIndexedAccess": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
         "resolveJsonModule": true,
         "skipLibCheck": true,
         "strict": true,
@@ -17,6 +23,5 @@
         "types": ["bun", "node"],
         "verbatimModuleSyntax": true
     },
-    "exclude": ["dist/**"],
-    "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "scripts/**/*.ts"]
+    "include": ["scripts/**/*.ts", "src/**/*.ts", "src/**/*.tsx"]
 }

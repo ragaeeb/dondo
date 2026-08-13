@@ -1,4 +1,4 @@
-export type Snapshot = {
+export type AntigravityCredential = {
     service: string;
     account: string;
     label: string;
@@ -6,6 +6,10 @@ export type Snapshot = {
     password: string;
     createdAt: string;
     updatedAt: string;
+};
+
+export type Snapshot = AntigravityCredential & {
+    identity: string;
 };
 
 export type TokenPayload = {
@@ -36,7 +40,13 @@ export type LimitCache = {
     quota: LimitResult;
 };
 
+export type VaultCorruption = {
+    corrupted: true;
+    error: string;
+};
+
 export type VaultSection<T> = {
+    corruptions?: Record<string, VaultCorruption>;
     data: Record<string, T>;
     limits: Record<string, LimitCache>;
 };
@@ -76,11 +86,3 @@ export type KiroSnapshot = {
 };
 
 export type KiroVault = VaultSection<KiroSnapshot>;
-
-export type AppVault = {
-    antigravity: PlatformVault;
-    cline: ClineVault;
-    codex: CodexVault;
-    kiro: KiroVault;
-    minimax: MinimaxVault;
-};

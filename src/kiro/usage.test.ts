@@ -47,10 +47,39 @@ it('should omit Kiro usage entries without a positive limit', () => {
     });
 });
 
+it('should clamp negative Kiro usage values to zero', () => {
+    const result = usageToLimitResult({
+        usageBreakdownList: [{ currentUsage: -5, resourceType: 'CREDIT', usageLimit: 10 }],
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+        expect(result.models.credit).toMatchObject({ limit: 10, percentage: 100, used: 0 });
+    }
+});
+
 it('should reject Kiro usage when no positive limit is available', () => {
     expect(usageToLimitResult({})).toEqual({ error: 'Kiro usage returned no quota fields', ok: false });
     expect(usageToLimitResult({ usageBreakdownList: [] })).toEqual({
         error: 'Kiro usage returned no quota fields',
         ok: false,
     });
+});
+
+it('should fail cleanly for hostile Kiro usage field types', () => {
+    expect(
+        usageToLimitResult({
+            nextDateReset: {},
+            subscriptionInfo: { subscriptionTitle: { label: 'poison' } },
+            usageBreakdownList: [
+                null,
+                {
+                    currentUsage: 'two',
+                    displayName: { label: 'Credits' },
+                    resourceType: 123,
+                    usageLimit: 'ten',
+                },
+            ],
+        }),
+    ).toEqual({ error: 'Kiro usage returned no quota fields', ok: false });
 });

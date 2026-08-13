@@ -1,45 +1,48 @@
-import { render } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { type ComponentChildren, render } from 'preact';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import packageJson from '../../package.json';
 import type { LimitResult, ModelLimit } from '../types.ts';
-import { type PlatformTab, pathForTab, tabFromPath } from './routes.ts';
+import { chooseExportDestination, downloadPlatformExport } from './export.ts';
+import { runWithOperationLock } from './operation.ts';
+import { type PlatformTab, pathForTab, platformTabs, tabFromPath } from './routes.ts';
 
 type AccountEntry = {
     active: boolean;
+    corrupted?: boolean;
+    error?: string;
     key: string;
-    updatedAt: string;
     limitUpdatedAt: string;
     quota: LimitResult | null;
+    updatedAt: string;
 };
 
-type AntigravityState = {
-    account: string;
+type AccountState = {
     entries: AccountEntry[];
+};
+
+type AntigravityState = AccountState & {
+    account: string;
     service: string;
     vaultPath: string;
 };
 
-type CodexState = {
+type CodexState = AccountState & {
     authPath: string;
-    entries: AccountEntry[];
     vaultPath: string;
 };
 
-type ClineState = {
-    entries: AccountEntry[];
+type ClineState = AccountState & {
     providersPath: string;
     vaultPath: string;
 };
 
-type KiroState = {
+type KiroState = AccountState & {
     authPath: string;
-    entries: AccountEntry[];
     vaultPath: string;
 };
 
-type MinimaxState = {
+type MinimaxState = AccountState & {
     configPath: string;
-    entries: AccountEntry[];
     vaultPath: string;
 };
 
@@ -51,107 +54,128 @@ type MinimaxCheckInResult = {
     status: 'claimed' | 'claimable' | 'disabled' | 'upcoming';
 };
 
-const BLOB_URL_REVOKE_DELAY_MS = 10_000;
+type OperationKind =
+    | 'check-in'
+    | 'clear'
+    | 'delete'
+    | 'export'
+    | 'initial-load'
+    | 'load'
+    | 'refresh-all'
+    | 'refresh-one'
+    | 'save'
+    | 'sync';
+
+type Operation = {
+    key?: string;
+    kind: OperationKind;
+};
+
+type Status = {
+    error: boolean;
+    message: string;
+};
+
+type ClearAction = {
+    confirmation: string;
+    placement: 'form' | 'toolbar';
+    successStatus: string;
+};
+
+type ToolbarAction = {
+    kind: 'check-in';
+    label: string;
+    pendingLabel: string;
+    pendingStatus: string;
+    refreshLimitsAfter?: boolean;
+    run: () => Promise<string>;
+};
+
+type PanelConfig<State extends AccountState> = {
+    clear?: ClearAction;
+    describeState: (state: State) => string;
+    displayName: string;
+    instructions?: ComponentChildren;
+    limits?: boolean;
+    loadSuccess?: (key: string) => string;
+    platform: PlatformTab;
+    syncResource?: 'auth' | 'config';
+    toolbarActions?: ToolbarAction[];
+};
+
+type PanelViewProps<State extends AccountState> = {
+    busy: boolean;
+    config: PanelConfig<State>;
+    keyValue: string;
+    onClear: () => void;
+    onDelete: (key: string) => void;
+    onExport: () => void;
+    onKeyInput: (value: string) => void;
+    onLoad: (key: string) => void;
+    onRefreshAll: () => void;
+    onRefreshOne: (key: string) => void;
+    onSave: (event: Event) => void;
+    onSync: (key: string) => void;
+    onToolbarAction: (action: ToolbarAction) => void;
+    operation: Operation | null;
+    state: State | null;
+    status: Status;
+};
+
+const CORRUPTED_ENTRY_MESSAGE = 'Saved account data is corrupted. Delete it and save it again.';
+const UNKNOWN_ERROR_MESSAGE = 'Something went wrong. Please try again.';
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const errorMessage = (error: unknown) => {
+    if (error instanceof Error && error.message.trim()) {
+        return error.message;
+    }
+    if (typeof error === 'string' && error.trim()) {
+        return error;
+    }
+    return UNKNOWN_ERROR_MESSAGE;
+};
+
+const responseErrorMessage = (payload: unknown, response: Response) => {
+    if (isRecord(payload) && typeof payload.error === 'string' && payload.error.trim()) {
+        return payload.error;
+    }
+    return response.statusText || `Request failed with status ${response.status}`;
+};
 
 const api = async <T,>(path: string, body?: unknown): Promise<T> => {
+    const hasBody = body !== undefined;
     const response = await fetch(path, {
-        body: body ? JSON.stringify(body) : undefined,
+        ...(hasBody ? { body: JSON.stringify(body) } : {}),
         headers: { 'Content-Type': 'application/json' },
-        method: body ? 'POST' : 'GET',
+        method: hasBody ? 'POST' : 'GET',
     });
     const contentType = response.headers.get('content-type') ?? '';
-    const json = contentType.includes('application/json') ? await response.json() : { error: await response.text() };
-    if (!response.ok) {
-        throw new Error(json.error ?? response.statusText);
+    let payload: unknown;
+
+    if (contentType.includes('application/json')) {
+        try {
+            payload = await response.json();
+        } catch {
+            throw new Error(response.ok ? 'Server returned invalid JSON' : responseErrorMessage(null, response));
+        }
     }
-    return json as T;
+
+    if (!response.ok) {
+        throw new Error(responseErrorMessage(payload, response));
+    }
+    if (payload === undefined) {
+        throw new Error('Server returned an unexpected response');
+    }
+    return payload as T;
 };
 
 const formatDate = (value: string) => (value ? new Date(value).toLocaleString() : '');
+
 const confirmSyncCurrent = (platform: string, key: string) =>
     confirm(`Replace "${key}" with the currently active ${platform} credentials? This overwrites the saved account.`);
-
-const deleteSavedAccount = async (
-    platform: PlatformTab,
-    displayName: string,
-    key: string,
-    refresh: () => Promise<void>,
-    setStatus: (value: string) => void,
-    setPendingKey: (value: string) => void,
-) => {
-    if (!confirm(`Delete the saved ${displayName} account "${key}"? This does not sign out the live account.`)) {
-        return;
-    }
-    setStatus(`Deleting ${key}...`);
-    setPendingKey(key);
-    try {
-        await api(`/api/${platform}/delete`, { key });
-        await refresh();
-        setStatus(`Deleted ${key}`);
-    } catch (error) {
-        setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-        setPendingKey('');
-    }
-};
-
-const downloadPlatformExport = async (platform: PlatformTab) => {
-    const response = await fetch(`/api/${platform}/export`, {
-        headers: { 'X-Dondo-Export': '1' },
-        method: 'POST',
-    });
-    if (!response.ok) {
-        const json = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(json?.error ?? response.statusText);
-    }
-
-    const contentType = response.headers.get('content-type') ?? '';
-    if (!contentType.toLowerCase().startsWith('application/json')) {
-        throw new Error('Export response was not JSON');
-    }
-
-    const blobUrl = URL.createObjectURL(await response.blob());
-    const disposition = response.headers.get('content-disposition') ?? '';
-    const candidate = disposition.match(/filename="([^"]+)"/)?.[1];
-    const filename =
-        candidate && /^[A-Za-z0-9][A-Za-z0-9._-]*\.json$/.test(candidate) ? candidate : `dondo-${platform}-wallet.json`;
-    const link = document.createElement('a');
-    link.href = blobUrl;
-    link.download = filename;
-    try {
-        document.body.append(link);
-        link.click();
-    } finally {
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(blobUrl), BLOB_URL_REVOKE_DELAY_MS);
-    }
-};
-
-const runPlatformExport = async (
-    platform: PlatformTab,
-    displayName: string,
-    setStatus: (value: string) => void,
-    setExporting: (value: boolean) => void,
-) => {
-    if (
-        !confirm(
-            `This downloads an unencrypted JSON file containing all saved ${displayName} credentials. Keep it private. Continue?`,
-        )
-    ) {
-        return;
-    }
-
-    setExporting(true);
-    setStatus(`Exporting ${displayName} wallet...`);
-    try {
-        await downloadPlatformExport(platform);
-        setStatus(`Exported ${displayName} wallet`);
-    } catch (error) {
-        setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-        setExporting(false);
-    }
-};
 
 const ModelCard = ({ model }: { model: [string, ModelLimit] }) => {
     const [name, data] = model;
@@ -164,9 +188,15 @@ const ModelCard = ({ model }: { model: [string, ModelLimit] }) => {
             </div>
             <div class="muted small">{name}</div>
             {!data.detail ? (
-                <div class="bar">
-                    <div class="fill" style={{ width: `${width}%` }} />
-                </div>
+                <progress
+                    class="bar"
+                    max={100}
+                    value={width}
+                    aria-label={`${data.displayName || name} quota remaining`}
+                    aria-valuetext={`${data.percentage}% left`}
+                >
+                    {data.percentage}% left
+                </progress>
             ) : null}
             <div class="small">
                 {data.used !== undefined && data.limit !== undefined ? `${data.used} / ${data.limit} used · ` : ''}
@@ -177,863 +207,563 @@ const ModelCard = ({ model }: { model: [string, ModelLimit] }) => {
     );
 };
 
-const AccountRow = ({
-    entry,
-    pending,
-    onLoad,
-    onDelete,
-    onRefresh,
-    onSync,
-    showLimits = true,
-}: {
+type AccountRowProps = {
+    busy: boolean;
     entry: AccountEntry;
-    pending: boolean;
     onDelete: (key: string) => void;
     onLoad: (key: string) => void;
     onRefresh?: (key: string) => void;
     onSync?: (key: string) => void;
-    showLimits?: boolean;
-}) => (
-    <article class="row">
-        <div class="row-head">
-            <div>
-                <div class="keyline">
-                    <div class="key">{entry.key}</div>
-                    {entry.active ? <span class="badge">Active</span> : null}
-                </div>
-                <div class="muted small">
-                    Updated {formatDate(entry.updatedAt)}
-                    {entry.limitUpdatedAt ? ` · limits ${formatDate(entry.limitUpdatedAt)}` : ''}
-                    {entry.quota?.ok ? ` · ${entry.quota.tier}` : ''}
-                </div>
-            </div>
-            <div class="actions">
-                <button class="danger" type="button" disabled={pending} onClick={() => onDelete(entry.key)}>
-                    Delete
-                </button>
-                {onRefresh ? (
-                    <button type="button" disabled={pending} onClick={() => onRefresh(entry.key)}>
-                        Refresh
-                    </button>
-                ) : null}
-                {onSync ? (
-                    <button type="button" disabled={pending} onClick={() => onSync(entry.key)}>
-                        Sync current
-                    </button>
-                ) : null}
-                <button type="button" disabled={pending} onClick={() => onLoad(entry.key)}>
-                    Load
-                </button>
-            </div>
+    operation: Operation | null;
+    showLimits: boolean;
+};
+
+type AccountActionProps = {
+    disabled: boolean;
+    entry: AccountEntry;
+    kind: 'load' | 'refresh-one' | 'sync';
+    label: string;
+    onAction: (key: string) => void;
+    operation: Operation | null;
+    pendingLabel: string;
+};
+
+const AccountAction = ({ disabled, entry, kind, label, onAction, operation, pendingLabel }: AccountActionProps) => {
+    const pending = operation?.kind === kind && operation.key === entry.key;
+    return (
+        <button
+            type="button"
+            aria-busy={pending || undefined}
+            disabled={disabled}
+            title={entry.corrupted ? CORRUPTED_ENTRY_MESSAGE : undefined}
+            onClick={() => onAction(entry.key)}
+        >
+            {pending ? pendingLabel : label}
+        </button>
+    );
+};
+
+const AccountActions = ({
+    busy,
+    entry,
+    onDelete,
+    onLoad,
+    onRefresh,
+    onSync,
+    operation,
+}: Omit<AccountRowProps, 'showLimits'>) => {
+    const deleting = operation?.kind === 'delete' && operation.key === entry.key;
+    const unavailable = busy || entry.corrupted === true;
+
+    return (
+        <div class="actions">
+            <button
+                class="danger"
+                type="button"
+                aria-busy={deleting || undefined}
+                disabled={busy}
+                onClick={() => onDelete(entry.key)}
+            >
+                {deleting ? 'Deleting…' : 'Delete'}
+            </button>
+            {onRefresh ? (
+                <AccountAction
+                    disabled={unavailable}
+                    entry={entry}
+                    kind="refresh-one"
+                    label="Refresh"
+                    operation={operation}
+                    pendingLabel="Refreshing…"
+                    onAction={onRefresh}
+                />
+            ) : null}
+            {onSync ? (
+                <AccountAction
+                    disabled={unavailable}
+                    entry={entry}
+                    kind="sync"
+                    label="Sync current"
+                    operation={operation}
+                    pendingLabel="Syncing…"
+                    onAction={onSync}
+                />
+            ) : null}
+            <AccountAction
+                disabled={unavailable}
+                entry={entry}
+                kind="load"
+                label="Load"
+                operation={operation}
+                pendingLabel="Loading…"
+                onAction={onLoad}
+            />
         </div>
-        {showLimits ? (
-            entry.quota?.ok ? (
-                <div class="quota">
-                    {Object.entries(entry.quota.models).map((model) => (
-                        <ModelCard key={model[0]} model={model} />
-                    ))}
+    );
+};
+
+const AccountQuota = ({ entry, showLimits }: Pick<AccountRowProps, 'entry' | 'showLimits'>) => {
+    if (entry.corrupted) {
+        return <div class="corrupt-note err small">{CORRUPTED_ENTRY_MESSAGE}</div>;
+    }
+    if (!showLimits) {
+        return null;
+    }
+    if (!entry.quota?.ok) {
+        return <div class="err small">{entry.quota?.error ?? 'No cached limit data'}</div>;
+    }
+    return (
+        <div class="quota">
+            {Object.entries(entry.quota.models).map((model) => (
+                <ModelCard key={model[0]} model={model} />
+            ))}
+        </div>
+    );
+};
+
+const AccountRow = ({ busy, entry, operation, showLimits, ...actions }: AccountRowProps) => {
+    const rowBusy = operation?.key === entry.key;
+
+    return (
+        <article class={entry.corrupted ? 'corrupted row' : 'row'} aria-busy={rowBusy || undefined}>
+            <div class="row-head">
+                <div>
+                    <div class="keyline">
+                        <div class="key">{entry.key}</div>
+                        {entry.active ? <span class="badge">Active</span> : null}
+                        {entry.corrupted ? <span class="badge badge-error">Corrupted</span> : null}
+                    </div>
+                    {entry.updatedAt ? (
+                        <div class="muted small">
+                            Updated {formatDate(entry.updatedAt)}
+                            {entry.limitUpdatedAt ? ` · limits ${formatDate(entry.limitUpdatedAt)}` : ''}
+                            {entry.quota?.ok ? ` · ${entry.quota.tier}` : ''}
+                        </div>
+                    ) : null}
                 </div>
-            ) : (
-                <div class="err small">{entry.quota?.error ?? 'No cached limit data'}</div>
-            )
-        ) : null}
-    </article>
+                <AccountActions busy={busy} entry={entry} operation={operation} {...actions} />
+            </div>
+            <AccountQuota entry={entry} showLimits={showLimits} />
+        </article>
+    );
+};
+
+const PanelToolbar = <State extends AccountState>({
+    busy,
+    config,
+    onClear,
+    onExport,
+    onRefreshAll,
+    onToolbarAction,
+    operation,
+    state,
+}: Pick<
+    PanelViewProps<State>,
+    'busy' | 'config' | 'onClear' | 'onExport' | 'onRefreshAll' | 'onToolbarAction' | 'operation' | 'state'
+>) => (
+    <div class="toolbar">
+        <div class="muted small">{state ? config.describeState(state) : ''}</div>
+        <div class="toolbar-actions">
+            {config.clear?.placement === 'toolbar' ? (
+                <button
+                    type="button"
+                    aria-busy={operation?.kind === 'clear' || undefined}
+                    disabled={busy}
+                    onClick={onClear}
+                >
+                    {operation?.kind === 'clear' ? 'Clearing…' : 'Clear live'}
+                </button>
+            ) : null}
+            <button
+                type="button"
+                aria-busy={operation?.kind === 'export' || undefined}
+                disabled={busy || !state?.entries.length}
+                onClick={onExport}
+            >
+                {operation?.kind === 'export' ? 'Exporting…' : 'Export'}
+            </button>
+            {config.limits ? (
+                <button
+                    type="button"
+                    aria-busy={operation?.kind === 'refresh-all' || undefined}
+                    disabled={busy}
+                    onClick={onRefreshAll}
+                >
+                    {operation?.kind === 'refresh-all' ? 'Refreshing…' : 'Refresh limits'}
+                </button>
+            ) : null}
+            {config.toolbarActions?.map((action) => (
+                <button
+                    type="button"
+                    key={action.kind}
+                    aria-busy={operation?.kind === action.kind || undefined}
+                    disabled={busy}
+                    onClick={() => onToolbarAction(action)}
+                >
+                    {operation?.kind === action.kind ? action.pendingLabel : action.label}
+                </button>
+            ))}
+        </div>
+    </div>
 );
 
-const AntigravityPanel = ({ active }: { active: boolean }) => {
-    const [state, setState] = useState<AntigravityState | null>(null);
-    const [status, setStatus] = useState('');
-    const [key, setKey] = useState('');
-    const [loaded, setLoaded] = useState(false);
-    const [pendingKey, setPendingKey] = useState('');
-    const [exporting, setExporting] = useState(false);
-
-    const refresh = async (forceLimits = false) => {
-        setStatus(forceLimits ? 'Refreshing limits...' : 'Loading accounts...');
-        setState(
-            await api<AntigravityState>(
-                forceLimits ? '/api/antigravity/limits/refresh' : '/api/antigravity/state',
-                forceLimits ? {} : undefined,
-            ),
-        );
-        setLoaded(true);
-        setStatus('');
-    };
-
-    const save = async (event: Event) => {
-        event.preventDefault();
-        const trimmed = key.trim();
-        if (!trimmed) {
-            return;
-        }
-        setStatus('Saving...');
-        try {
-            await api('/api/antigravity/save', { key: trimmed });
-            setKey('');
-            await refresh(false);
-            setStatus(`Saved ${trimmed}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        }
-    };
-
-    const load = async (entryKey: string) => {
-        setStatus(`Loading ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            await api('/api/antigravity/load', { key: entryKey });
-            await refresh(false);
-            setStatus(`Loaded ${entryKey}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
-
-    const refreshOne = async (entryKey: string) => {
-        setStatus(`Refreshing ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            setState(await api<AntigravityState>('/api/antigravity/limits/refresh', { key: entryKey }));
-            setStatus(`Refreshed ${entryKey}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
-
-    const syncCurrent = async (entryKey: string) => {
-        if (!confirmSyncCurrent('Antigravity', entryKey)) {
-            return;
-        }
-        setStatus(`Syncing current Antigravity auth to ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            await api('/api/antigravity/save', { key: entryKey });
-            await refreshOne(entryKey);
-            setStatus(`Synced ${entryKey}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
-
-    const clear = async () => {
-        if (!confirm('Clear the live Antigravity keychain item and local auth state?')) {
-            return;
-        }
-        setStatus('Clearing...');
-        try {
-            await api('/api/antigravity/clear', {});
-            await refresh(false);
-            setStatus('Cleared live Antigravity auth state');
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        }
-    };
-
-    useEffect(() => {
-        if (!active || loaded) {
-            return;
-        }
-        refresh(false).catch((error) => {
-            setStatus(error.message);
-        });
-    }, [active, loaded]);
-
-    return (
-        <div hidden={!active}>
-            <div class="toolbar">
-                <div class="muted small">{state ? `${state.service}/${state.account} · ${state.vaultPath}` : ''}</div>
-                <div class="toolbar-actions">
-                    <button
-                        type="button"
-                        aria-busy={exporting}
-                        disabled={exporting || !state?.entries.length}
-                        onClick={() => runPlatformExport('antigravity', 'Antigravity', setStatus, setExporting)}
-                    >
-                        Export
-                    </button>
-                    <button type="button" onClick={() => refresh(true).catch((error) => setStatus(error.message))}>
-                        Refresh limits
-                    </button>
-                </div>
-            </div>
-            <section class="panel">
-                <form onSubmit={save}>
-                    <input
-                        value={key}
-                        placeholder="Account label"
-                        autocomplete="off"
-                        onInput={(event) => setKey(event.currentTarget.value)}
-                    />
-                    <button class="primary" type="submit">
-                        Save current
-                    </button>
-                    <button type="button" onClick={() => clear().catch((error) => setStatus(error.message))}>
-                        Clear live
-                    </button>
-                </form>
-                <div id="status" class="status muted">
-                    {status}
-                </div>
-            </section>
-            <section class="list">
-                {state?.entries.length ? (
-                    state.entries.map((entry) => (
-                        <AccountRow
-                            key={entry.key}
-                            entry={entry}
-                            pending={pendingKey === entry.key}
-                            onDelete={(entryKey) =>
-                                deleteSavedAccount(
-                                    'antigravity',
-                                    'Antigravity',
-                                    entryKey,
-                                    () => refresh(false),
-                                    setStatus,
-                                    setPendingKey,
-                                )
-                            }
-                            onLoad={load}
-                            onRefresh={refreshOne}
-                            onSync={syncCurrent}
-                        />
-                    ))
-                ) : (
-                    <div class="muted">No saved accounts yet.</div>
-                )}
-            </section>
+const PanelForm = <State extends AccountState>({
+    busy,
+    config,
+    keyValue,
+    onClear,
+    onKeyInput,
+    onSave,
+    operation,
+    status,
+}: Pick<
+    PanelViewProps<State>,
+    'busy' | 'config' | 'keyValue' | 'onClear' | 'onKeyInput' | 'onSave' | 'operation' | 'status'
+>) => (
+    <section class="panel">
+        {config.instructions ? <div class="instructions muted small">{config.instructions}</div> : null}
+        <form onSubmit={onSave}>
+            <label class="sr-only" for={`${config.platform}-account-label`}>
+                {config.displayName} account label
+            </label>
+            <input
+                id={`${config.platform}-account-label`}
+                value={keyValue}
+                placeholder="Account label"
+                autocomplete="off"
+                disabled={busy}
+                maxLength={80}
+                required
+                onInput={(event) => onKeyInput(event.currentTarget.value)}
+            />
+            <button
+                class="primary"
+                type="submit"
+                aria-busy={operation?.kind === 'save' || undefined}
+                disabled={busy || !keyValue.trim()}
+            >
+                {operation?.kind === 'save' ? 'Saving…' : 'Save current'}
+            </button>
+            {config.clear?.placement === 'form' ? (
+                <button
+                    type="button"
+                    aria-busy={operation?.kind === 'clear' || undefined}
+                    disabled={busy}
+                    onClick={onClear}
+                >
+                    {operation?.kind === 'clear' ? 'Clearing…' : 'Clear live'}
+                </button>
+            ) : null}
+        </form>
+        <div
+            class={status.error ? 'err status' : 'muted status'}
+            role={status.error ? 'alert' : 'status'}
+            aria-atomic="true"
+            aria-live={status.error ? 'assertive' : 'polite'}
+        >
+            {status.message}
         </div>
-    );
-};
+    </section>
+);
 
-const CodexPanel = ({ active }: { active: boolean }) => {
-    const [state, setState] = useState<CodexState | null>(null);
-    const [status, setStatus] = useState('');
+const AccountList = <State extends AccountState>({
+    busy,
+    config,
+    onDelete,
+    onLoad,
+    onRefreshOne,
+    onSync,
+    operation,
+    state,
+}: Pick<
+    PanelViewProps<State>,
+    'busy' | 'config' | 'onDelete' | 'onLoad' | 'onRefreshOne' | 'onSync' | 'operation' | 'state'
+>) => (
+    <section class="list" aria-label={`Saved ${config.displayName} accounts`}>
+        {state?.entries.length ? (
+            state.entries.map((entry) => (
+                <AccountRow
+                    key={entry.key}
+                    busy={busy}
+                    entry={entry}
+                    operation={operation}
+                    showLimits={config.limits ?? false}
+                    onDelete={onDelete}
+                    onLoad={onLoad}
+                    {...(config.limits ? { onRefresh: onRefreshOne } : {})}
+                    {...(config.syncResource ? { onSync } : {})}
+                />
+            ))
+        ) : (
+            <div class="muted">No saved accounts yet.</div>
+        )}
+    </section>
+);
+
+const PanelView = <State extends AccountState>({ active, ...props }: PanelViewProps<State> & { active: boolean }) => (
+    <div hidden={!active} aria-busy={props.busy || undefined}>
+        <PanelToolbar {...props} />
+        <PanelForm {...props} />
+        <AccountList {...props} />
+    </div>
+);
+
+const PlatformAccountPanel = <State extends AccountState>({
+    active,
+    config,
+}: {
+    active: boolean;
+    config: PanelConfig<State>;
+}) => {
+    const [state, setState] = useState<State | null>(null);
+    const [status, setStatus] = useState<Status>({ error: false, message: '' });
     const [key, setKey] = useState('');
     const [loaded, setLoaded] = useState(false);
-    const [pendingKey, setPendingKey] = useState('');
-    const [exporting, setExporting] = useState(false);
+    const [operation, setOperation] = useState<Operation | null>(null);
+    const operationLock = useRef(false);
+    const busy = operation !== null;
 
-    const refresh = async (forceLimits = false) => {
-        setStatus(forceLimits ? 'Refreshing limits...' : 'Loading accounts...');
-        setState(
-            await api<CodexState>(
-                forceLimits ? '/api/codex/limits/refresh' : '/api/codex/state',
-                forceLimits ? {} : undefined,
-            ),
+    const setMessage = (message: string, error = false) => setStatus({ error, message });
+
+    const fetchState = async (mode: 'limits' | 'state', entryKey?: string) => {
+        const nextState = await api<State>(
+            mode === 'limits' ? `/api/${config.platform}/limits/refresh` : `/api/${config.platform}/state`,
+            mode === 'limits' ? (entryKey ? { key: entryKey } : {}) : undefined,
         );
+        setState(nextState);
         setLoaded(true);
-        setStatus('');
+        return nextState;
     };
 
-    const save = async (event: Event) => {
-        event.preventDefault();
-        const trimmed = key.trim();
-        if (!trimmed) {
-            return;
-        }
-        setStatus('Saving...');
-        try {
-            await api('/api/codex/save', { key: trimmed });
-            setKey('');
-            await refresh(false);
-            setStatus(`Saved ${trimmed}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        }
-    };
-
-    const load = async (entryKey: string) => {
-        setStatus(`Loading ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            await api('/api/codex/load', { key: entryKey });
-            await refresh(false);
-            setStatus(`Loaded ${entryKey}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
-
-    const refreshOne = async (entryKey: string) => {
-        setStatus(`Refreshing ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            setState(await api<CodexState>('/api/codex/limits/refresh', { key: entryKey }));
-            setStatus(`Refreshed ${entryKey}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
-
-    const syncCurrent = async (entryKey: string) => {
-        if (!confirmSyncCurrent('Codex', entryKey)) {
-            return;
-        }
-        setStatus(`Syncing current Codex auth to ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            await api('/api/codex/save', { key: entryKey });
-            await refreshOne(entryKey);
-            setStatus(`Synced ${entryKey}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
-
-    useEffect(() => {
-        if (!active || loaded) {
-            return;
-        }
-        refresh(false).catch((error) => {
-            setStatus(error.message);
+    const runOperation = async (
+        nextOperation: Operation,
+        pendingStatus: string,
+        task: () => Promise<string | undefined>,
+    ) => {
+        await runWithOperationLock(operationLock, async () => {
+            setOperation(nextOperation);
+            setMessage(pendingStatus);
+            try {
+                setMessage((await task()) ?? '');
+            } catch (error) {
+                setMessage(errorMessage(error), true);
+            } finally {
+                setOperation(null);
+            }
         });
-    }, [active, loaded]);
-
-    return (
-        <div hidden={!active}>
-            <div class="toolbar">
-                <div class="muted small">{state ? `${state.authPath} · ${state.vaultPath}` : ''}</div>
-                <div class="toolbar-actions">
-                    <button
-                        type="button"
-                        aria-busy={exporting}
-                        disabled={exporting || !state?.entries.length}
-                        onClick={() => runPlatformExport('codex', 'Codex', setStatus, setExporting)}
-                    >
-                        Export
-                    </button>
-                    <button type="button" onClick={() => refresh(true).catch((error) => setStatus(error.message))}>
-                        Refresh limits
-                    </button>
-                </div>
-            </div>
-            <section class="panel">
-                <form onSubmit={save}>
-                    <input
-                        value={key}
-                        placeholder="Account label"
-                        autocomplete="off"
-                        onInput={(event) => setKey(event.currentTarget.value)}
-                    />
-                    <button class="primary" type="submit">
-                        Save current
-                    </button>
-                </form>
-                <div class="status muted">{status}</div>
-            </section>
-            <section class="list">
-                {state?.entries.length ? (
-                    state.entries.map((entry) => (
-                        <AccountRow
-                            key={entry.key}
-                            entry={entry}
-                            pending={pendingKey === entry.key}
-                            onDelete={(entryKey) =>
-                                deleteSavedAccount(
-                                    'codex',
-                                    'Codex',
-                                    entryKey,
-                                    () => refresh(false),
-                                    setStatus,
-                                    setPendingKey,
-                                )
-                            }
-                            onLoad={load}
-                            onRefresh={refreshOne}
-                            onSync={syncCurrent}
-                        />
-                    ))
-                ) : (
-                    <div class="muted">No saved accounts yet.</div>
-                )}
-            </section>
-        </div>
-    );
-};
-
-const ClinePanel = ({ active }: { active: boolean }) => {
-    const [state, setState] = useState<ClineState | null>(null);
-    const [status, setStatus] = useState('');
-    const [key, setKey] = useState('');
-    const [loaded, setLoaded] = useState(false);
-    const [pendingKey, setPendingKey] = useState('');
-    const [exporting, setExporting] = useState(false);
-
-    const refresh = async () => {
-        setStatus('Loading accounts...');
-        setState(await api<ClineState>('/api/cline/state'));
-        setLoaded(true);
-        setStatus('');
     };
 
-    const save = async (event: Event) => {
+    const save = (event: Event) => {
         event.preventDefault();
         const trimmed = key.trim();
         if (!trimmed) {
             return;
         }
-        setStatus('Saving...');
-        try {
-            await api('/api/cline/save', { key: trimmed });
+        void runOperation({ kind: 'save' }, 'Saving...', async () => {
+            await api(`/api/${config.platform}/save`, { key: trimmed });
             setKey('');
-            await refresh();
-            setStatus(`Saved ${trimmed}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        }
-    };
-
-    const load = async (entryKey: string) => {
-        setStatus(`Loading ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            await api('/api/cline/load', { key: entryKey });
-            await refresh();
-            setStatus(`Loaded ${entryKey}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
-
-    const syncCurrent = async (entryKey: string) => {
-        if (!confirmSyncCurrent('Cline', entryKey)) {
-            return;
-        }
-        setStatus(`Syncing current Cline auth to ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            await api('/api/cline/save', { key: entryKey });
-            await refresh();
-            setStatus(`Synced ${entryKey}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
-
-    useEffect(() => {
-        if (!active || loaded) {
-            return;
-        }
-        refresh().catch((error) => {
-            setStatus(error.message);
+            await fetchState('state');
+            return `Saved ${trimmed}`;
         });
-    }, [active, loaded]);
-
-    return (
-        <div hidden={!active}>
-            <div class="toolbar">
-                <div class="muted small">{state ? `${state.providersPath} · ${state.vaultPath}` : ''}</div>
-                <div class="toolbar-actions">
-                    <button
-                        type="button"
-                        aria-busy={exporting}
-                        disabled={exporting || !state?.entries.length}
-                        onClick={() => runPlatformExport('cline', 'Cline', setStatus, setExporting)}
-                    >
-                        Export
-                    </button>
-                </div>
-            </div>
-            <section class="panel">
-                <form onSubmit={save}>
-                    <input
-                        value={key}
-                        placeholder="Account label"
-                        autocomplete="off"
-                        onInput={(event) => setKey(event.currentTarget.value)}
-                    />
-                    <button class="primary" type="submit">
-                        Save current
-                    </button>
-                </form>
-                <div class="status muted">{status}</div>
-            </section>
-            <section class="list">
-                {state?.entries.length ? (
-                    state.entries.map((entry) => (
-                        <AccountRow
-                            key={entry.key}
-                            entry={entry}
-                            pending={pendingKey === entry.key}
-                            onDelete={(entryKey) =>
-                                deleteSavedAccount(
-                                    'cline',
-                                    'Cline',
-                                    entryKey,
-                                    () => refresh(),
-                                    setStatus,
-                                    setPendingKey,
-                                )
-                            }
-                            onLoad={load}
-                            onSync={syncCurrent}
-                            showLimits={false}
-                        />
-                    ))
-                ) : (
-                    <div class="muted">No saved accounts yet.</div>
-                )}
-            </section>
-        </div>
-    );
-};
-
-const KiroPanel = ({ active }: { active: boolean }) => {
-    const [state, setState] = useState<KiroState | null>(null);
-    const [status, setStatus] = useState('');
-    const [key, setKey] = useState('');
-    const [loaded, setLoaded] = useState(false);
-    const [pendingKey, setPendingKey] = useState('');
-    const [exporting, setExporting] = useState(false);
-
-    const refresh = async (forceLimits = false) => {
-        setStatus(forceLimits ? 'Refreshing limits...' : 'Loading accounts...');
-        setState(
-            await api<KiroState>(
-                forceLimits ? '/api/kiro/limits/refresh' : '/api/kiro/state',
-                forceLimits ? {} : undefined,
-            ),
-        );
-        setLoaded(true);
-        setStatus('');
     };
 
-    const saveCurrent = async () => {
-        const trimmed = key.trim();
-        if (!trimmed) {
-            return;
-        }
-        setStatus('Saving...');
-        try {
-            await api('/api/kiro/save', { key: trimmed });
-            setKey('');
-            await refresh();
-            setStatus(`Saved ${trimmed}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        }
+    const load = (entryKey: string) => {
+        void runOperation({ key: entryKey, kind: 'load' }, `Loading ${entryKey}...`, async () => {
+            await api(`/api/${config.platform}/load`, { key: entryKey });
+            await fetchState('state');
+            return config.loadSuccess?.(entryKey) ?? `Loaded ${entryKey}`;
+        });
     };
 
-    const save = async (event: Event) => {
-        event.preventDefault();
-        await saveCurrent();
-    };
-
-    const load = async (entryKey: string) => {
-        setStatus(`Loading ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            await api('/api/kiro/load', { key: entryKey });
-            await refresh();
-            setStatus(`Loaded ${entryKey}. Reopen Kiro to use it.`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
-
-    const refreshOne = async (entryKey: string) => {
-        setStatus(`Refreshing ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            setState(await api<KiroState>('/api/kiro/limits/refresh', { key: entryKey }));
-            setStatus(`Refreshed ${entryKey}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
-
-    const clear = async () => {
+    const remove = (entryKey: string) => {
         if (
             !confirm(
-                'Is Kiro fully quit, and did you save the current account? Dondo will remove its local login files without remotely signing out.',
+                `Delete the saved ${config.displayName} account "${entryKey}"? This does not sign out the live account.`,
             )
         ) {
             return;
         }
-        setStatus('Clearing...');
-        try {
-            await api('/api/kiro/clear', {});
-            await refresh();
-            setStatus('Cleared live Kiro auth. Reopen Kiro to sign in.');
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
+        void runOperation({ key: entryKey, kind: 'delete' }, `Deleting ${entryKey}...`, async () => {
+            await api(`/api/${config.platform}/delete`, { key: entryKey });
+            await fetchState('state');
+            return `Deleted ${entryKey}`;
+        });
+    };
+
+    const refreshOne = (entryKey: string) => {
+        void runOperation({ key: entryKey, kind: 'refresh-one' }, `Refreshing ${entryKey}...`, async () => {
+            await fetchState('limits', entryKey);
+            return `Refreshed ${entryKey}`;
+        });
+    };
+
+    const syncCurrent = (entryKey: string) => {
+        if (!confirmSyncCurrent(config.displayName, entryKey)) {
+            return;
         }
+        void runOperation(
+            { key: entryKey, kind: 'sync' },
+            `Syncing current ${config.displayName} ${config.syncResource} to ${entryKey}...`,
+            async () => {
+                await api(`/api/${config.platform}/save`, { key: entryKey });
+                await fetchState(config.limits ? 'limits' : 'state', config.limits ? entryKey : undefined);
+                return `Synced ${entryKey}`;
+            },
+        );
+    };
+
+    const refreshAll = () => {
+        void runOperation({ kind: 'refresh-all' }, 'Refreshing limits...', async () => {
+            await fetchState('limits');
+            return 'Refreshed limits';
+        });
+    };
+
+    const exportWallet = () => {
+        if (
+            !confirm(
+                `This downloads an unencrypted JSON file containing all saved ${config.displayName} credentials. Keep it private. Continue?`,
+            )
+        ) {
+            return;
+        }
+        void runOperation({ kind: 'export' }, `Exporting ${config.displayName} wallet...`, async () => {
+            const destination = await chooseExportDestination(config.platform);
+            if (!destination) {
+                return '';
+            }
+            await downloadPlatformExport(config.platform, destination);
+            return `Exported ${config.displayName} wallet`;
+        });
+    };
+
+    const clearLive = () => {
+        if (!config.clear || !confirm(config.clear.confirmation)) {
+            return;
+        }
+        void runOperation({ kind: 'clear' }, 'Clearing...', async () => {
+            await api(`/api/${config.platform}/clear`, {});
+            await fetchState('state');
+            return config.clear?.successStatus;
+        });
+    };
+
+    const runToolbarAction = (action: ToolbarAction) => {
+        void runOperation({ kind: action.kind }, action.pendingStatus, async () => {
+            const message = await action.run();
+            if (action.refreshLimitsAfter) {
+                await fetchState('limits').catch(() => undefined);
+            }
+            return message;
+        });
     };
 
     useEffect(() => {
         if (!active || loaded) {
             return;
         }
-        refresh().catch((error) => {
-            setStatus(error.message);
+        void runOperation({ kind: 'initial-load' }, 'Loading accounts...', async () => {
+            await fetchState('state');
+            return '';
         });
     }, [active, loaded]);
 
     return (
-        <div hidden={!active}>
-            <div class="toolbar">
-                <div class="muted small">{state ? `${state.authPath} · ${state.vaultPath}` : ''}</div>
-                <div class="toolbar-actions">
-                    <button type="button" onClick={() => clear().catch((error) => setStatus(error.message))}>
-                        Clear live
-                    </button>
-                    <button
-                        type="button"
-                        aria-busy={exporting}
-                        disabled={exporting || !state?.entries.length}
-                        onClick={() => runPlatformExport('kiro', 'Kiro', setStatus, setExporting)}
-                    >
-                        Export
-                    </button>
-                    <button type="button" onClick={() => refresh(true).catch((error) => setStatus(error.message))}>
-                        Refresh limits
-                    </button>
-                </div>
-            </div>
-            <section class="panel">
-                <div class="muted small">
-                    While signed in, save the current account. Then fully quit Kiro and use Clear live. Reopen Kiro,
-                    sign into the next account, and save it. To switch later, quit Kiro, load an account here, then
-                    reopen Kiro.
-                </div>
-                <form onSubmit={save}>
-                    <input
-                        value={key}
-                        placeholder="Account label"
-                        autocomplete="off"
-                        onInput={(event) => setKey(event.currentTarget.value)}
-                    />
-                    <button class="primary" type="submit">
-                        Save current
-                    </button>
-                </form>
-                <div class="status muted">{status}</div>
-            </section>
-            <section class="list">
-                {state?.entries.length ? (
-                    state.entries.map((entry) => (
-                        <AccountRow
-                            key={entry.key}
-                            entry={entry}
-                            pending={pendingKey === entry.key}
-                            onDelete={(entryKey) =>
-                                deleteSavedAccount(
-                                    'kiro',
-                                    'Kiro',
-                                    entryKey,
-                                    () => refresh(false),
-                                    setStatus,
-                                    setPendingKey,
-                                )
-                            }
-                            onLoad={load}
-                            onRefresh={refreshOne}
-                        />
-                    ))
-                ) : (
-                    <div class="muted">No saved accounts yet.</div>
-                )}
-            </section>
-        </div>
+        <PanelView
+            active={active}
+            busy={busy}
+            config={config}
+            keyValue={key}
+            operation={operation}
+            state={state}
+            status={status}
+            onClear={clearLive}
+            onDelete={remove}
+            onExport={exportWallet}
+            onKeyInput={setKey}
+            onLoad={load}
+            onRefreshAll={refreshAll}
+            onRefreshOne={refreshOne}
+            onSave={save}
+            onSync={syncCurrent}
+            onToolbarAction={runToolbarAction}
+        />
     );
 };
 
-const MinimaxPanel = ({ active }: { active: boolean }) => {
-    const [state, setState] = useState<MinimaxState | null>(null);
-    const [status, setStatus] = useState('');
-    const [key, setKey] = useState('');
-    const [loaded, setLoaded] = useState(false);
-    const [pendingKey, setPendingKey] = useState('');
-    const [exporting, setExporting] = useState(false);
-    const [checkingIn, setCheckingIn] = useState(false);
+const ANTIGRAVITY_CONFIG: PanelConfig<AntigravityState> = {
+    clear: {
+        confirmation: 'Clear the live Antigravity keychain item and local auth state?',
+        placement: 'form',
+        successStatus: 'Cleared live Antigravity auth state',
+    },
+    describeState: (state) => `${state.service}/${state.account} · ${state.vaultPath}`,
+    displayName: 'Antigravity',
+    limits: true,
+    platform: 'antigravity',
+    syncResource: 'auth',
+};
 
-    const refresh = async (forceLimits = false) => {
-        setStatus(forceLimits ? 'Refreshing limits...' : 'Loading accounts...');
-        setState(
-            await api<MinimaxState>(
-                forceLimits ? '/api/minimax/limits/refresh' : '/api/minimax/state',
-                forceLimits ? {} : undefined,
-            ),
-        );
-        setLoaded(true);
-        setStatus('');
-    };
+const CODEX_CONFIG: PanelConfig<CodexState> = {
+    describeState: (state) => `${state.authPath} · ${state.vaultPath}`,
+    displayName: 'Codex',
+    limits: true,
+    platform: 'codex',
+    syncResource: 'auth',
+};
 
-    const save = async (event: Event) => {
-        event.preventDefault();
-        const trimmed = key.trim();
-        if (!trimmed) {
-            return;
-        }
-        setStatus('Saving...');
-        try {
-            await api('/api/minimax/save', { key: trimmed });
-            setKey('');
-            await refresh(false);
-            setStatus(`Saved ${trimmed}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        }
-    };
+const CLINE_CONFIG: PanelConfig<ClineState> = {
+    describeState: (state) => `${state.providersPath} · ${state.vaultPath}`,
+    displayName: 'Cline',
+    platform: 'cline',
+    syncResource: 'auth',
+};
 
-    const load = async (entryKey: string) => {
-        setStatus(`Loading ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            await api('/api/minimax/load', { key: entryKey });
-            await refresh(false);
-            setStatus(`Loaded ${entryKey}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
+const KIRO_CONFIG: PanelConfig<KiroState> = {
+    clear: {
+        confirmation:
+            'Is Kiro fully quit, and did you save the current account? Dondo will remove its local login files without remotely signing out.',
+        placement: 'toolbar',
+        successStatus: 'Cleared live Kiro auth. Reopen Kiro to sign in.',
+    },
+    describeState: (state) => `${state.authPath} · ${state.vaultPath}`,
+    displayName: 'Kiro',
+    instructions:
+        'While signed in, save the current account. Then fully quit Kiro and use Clear live. Reopen Kiro, sign into the next account, and save it. To switch later, quit Kiro, load an account here, then reopen Kiro.',
+    limits: true,
+    loadSuccess: (key) => `Loaded ${key}. Reopen Kiro to use it.`,
+    platform: 'kiro',
+};
 
-    const refreshOne = async (entryKey: string) => {
-        setStatus(`Refreshing ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            setState(await api<MinimaxState>('/api/minimax/limits/refresh', { key: entryKey }));
-            setStatus(`Refreshed ${entryKey}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
+const minimaxCheckIn = async () => {
+    const result = await api<MinimaxCheckInResult>('/api/minimax/check-in', {});
+    if (result.claimed) {
+        return `Checked in for ${result.points} credits`;
+    }
+    if (result.alreadyClaimed) {
+        return `Already checked in today for ${result.points} credits`;
+    }
+    if (result.status === 'disabled') {
+        return 'MiniMax check-in is disabled today';
+    }
+    return 'MiniMax check-in is not available yet';
+};
 
-    const syncCurrent = async (entryKey: string) => {
-        if (!confirmSyncCurrent('MiniMax', entryKey)) {
-            return;
-        }
-        setStatus(`Syncing current MiniMax config to ${entryKey}...`);
-        setPendingKey(entryKey);
-        try {
-            await api('/api/minimax/save', { key: entryKey });
-            await refreshOne(entryKey);
-            setStatus(`Synced ${entryKey}`);
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setPendingKey('');
-        }
-    };
-
-    const checkIn = async () => {
-        setCheckingIn(true);
-        setStatus('Checking in...');
-        try {
-            const result = await api<MinimaxCheckInResult>('/api/minimax/check-in', {});
-            await refresh(true).catch(() => undefined);
-            if (result.claimed) {
-                setStatus(`Checked in for ${result.points} credits`);
-            } else if (result.alreadyClaimed) {
-                setStatus(`Already checked in today for ${result.points} credits`);
-            } else if (result.status === 'disabled') {
-                setStatus('MiniMax check-in is disabled today');
-            } else {
-                setStatus('MiniMax check-in is not available yet');
-            }
-        } catch (error) {
-            setStatus(error instanceof Error ? error.message : String(error));
-        } finally {
-            setCheckingIn(false);
-        }
-    };
-
-    useEffect(() => {
-        if (!active || loaded) {
-            return;
-        }
-        refresh(false).catch((error) => {
-            setStatus(error.message);
-        });
-    }, [active, loaded]);
-
-    return (
-        <div hidden={!active}>
-            <div class="toolbar">
-                <div class="muted small">{state ? `${state.configPath} · ${state.vaultPath}` : ''}</div>
-                <div class="toolbar-actions">
-                    <button
-                        type="button"
-                        aria-busy={exporting}
-                        disabled={exporting || !state?.entries.length}
-                        onClick={() => runPlatformExport('minimax', 'MiniMax', setStatus, setExporting)}
-                    >
-                        Export
-                    </button>
-                    <button type="button" onClick={() => refresh(true).catch((error) => setStatus(error.message))}>
-                        Refresh limits
-                    </button>
-                    <button type="button" aria-busy={checkingIn} disabled={checkingIn} onClick={() => checkIn()}>
-                        Daily Check-In
-                    </button>
-                </div>
-            </div>
-            <section class="panel">
-                <form onSubmit={save}>
-                    <input
-                        value={key}
-                        placeholder="Account label"
-                        autocomplete="off"
-                        onInput={(event) => setKey(event.currentTarget.value)}
-                    />
-                    <button class="primary" type="submit">
-                        Save current
-                    </button>
-                </form>
-                <div class="status muted">{status}</div>
-            </section>
-            <section class="list">
-                {state?.entries.length ? (
-                    state.entries.map((entry) => (
-                        <AccountRow
-                            key={entry.key}
-                            entry={entry}
-                            pending={pendingKey === entry.key}
-                            onDelete={(entryKey) =>
-                                deleteSavedAccount(
-                                    'minimax',
-                                    'MiniMax',
-                                    entryKey,
-                                    () => refresh(false),
-                                    setStatus,
-                                    setPendingKey,
-                                )
-                            }
-                            onLoad={load}
-                            onRefresh={refreshOne}
-                            onSync={syncCurrent}
-                        />
-                    ))
-                ) : (
-                    <div class="muted">No saved accounts yet.</div>
-                )}
-            </section>
-        </div>
-    );
+const MINIMAX_CONFIG: PanelConfig<MinimaxState> = {
+    describeState: (state) => `${state.configPath} · ${state.vaultPath}`,
+    displayName: 'MiniMax',
+    limits: true,
+    platform: 'minimax',
+    syncResource: 'config',
+    toolbarActions: [
+        {
+            kind: 'check-in',
+            label: 'Daily Check-In',
+            pendingLabel: 'Checking in…',
+            pendingStatus: 'Checking in...',
+            refreshLimitsAfter: true,
+            run: minimaxCheckIn,
+        },
+    ],
 };
 
 const App = () => {
@@ -1062,35 +792,23 @@ const App = () => {
                 </div>
             </div>
             <nav class="tabs" aria-label="Platforms">
-                <button
-                    type="button"
-                    class={tab === 'antigravity' ? 'tab active' : 'tab'}
-                    onClick={() => selectTab('antigravity')}
-                >
-                    Antigravity
-                </button>
-                <button type="button" class={tab === 'codex' ? 'tab active' : 'tab'} onClick={() => selectTab('codex')}>
-                    Codex
-                </button>
-                <button type="button" class={tab === 'cline' ? 'tab active' : 'tab'} onClick={() => selectTab('cline')}>
-                    Cline
-                </button>
-                <button type="button" class={tab === 'kiro' ? 'tab active' : 'tab'} onClick={() => selectTab('kiro')}>
-                    Kiro
-                </button>
-                <button
-                    type="button"
-                    class={tab === 'minimax' ? 'tab active' : 'tab'}
-                    onClick={() => selectTab('minimax')}
-                >
-                    MiniMax
-                </button>
+                {platformTabs.map((item) => (
+                    <button
+                        type="button"
+                        key={item.id}
+                        aria-current={tab === item.id ? 'page' : undefined}
+                        class={tab === item.id ? 'active tab' : 'tab'}
+                        onClick={() => selectTab(item.id)}
+                    >
+                        {item.label}
+                    </button>
+                ))}
             </nav>
-            <AntigravityPanel active={tab === 'antigravity'} />
-            <CodexPanel active={tab === 'codex'} />
-            <ClinePanel active={tab === 'cline'} />
-            <KiroPanel active={tab === 'kiro'} />
-            <MinimaxPanel active={tab === 'minimax'} />
+            <PlatformAccountPanel active={tab === 'antigravity'} config={ANTIGRAVITY_CONFIG} />
+            <PlatformAccountPanel active={tab === 'codex'} config={CODEX_CONFIG} />
+            <PlatformAccountPanel active={tab === 'cline'} config={CLINE_CONFIG} />
+            <PlatformAccountPanel active={tab === 'kiro'} config={KIRO_CONFIG} />
+            <PlatformAccountPanel active={tab === 'minimax'} config={MINIMAX_CONFIG} />
             <footer class="footer">
                 <a href={packageJson.homepage} target="_blank" rel="noreferrer">
                     GitHub

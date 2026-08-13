@@ -13,6 +13,10 @@
 - UI CSS: `src/ui/styles.css`.
 - Antigravity behavior: `src/antigravity/*`.
 - Codex behavior: `src/codex/*`.
+- Cline behavior: `src/cline/*`.
+- Kiro behavior: `src/kiro/*`.
+- MiniMax behavior: `src/minimax/*`.
+- Shared account state: `src/account-state.ts`.
 - Vault and encryption: `src/storage/*`.
 - Shared types: `src/types.ts`.
 - Config and constants: `src/config.ts`.
@@ -44,6 +48,18 @@ Do not reintroduce root launcher shims or barrel `index.ts` files. Import concre
     "codex": {
         "data": {},
         "limits": {}
+    },
+    "cline": {
+        "data": {},
+        "limits": {}
+    },
+    "kiro": {
+        "data": {},
+        "limits": {}
+    },
+    "minimax": {
+        "data": {},
+        "limits": {}
     }
 }
 ```
@@ -52,7 +68,14 @@ Do not reintroduce root launcher shims or barrel `index.ts` files. Import concre
 - `antigravity.limits` contains cached limit data.
 - `codex.data` contains encrypted `~/.codex/auth.json` snapshots.
 - `codex.limits` contains cached Codex ChatGPT usage data.
-- Do not add flat-vault migrations unless explicitly requested.
+- `cline.data` contains encrypted `~/.cline/data/settings/providers.json` snapshots; Cline has no limit cache.
+- `kiro.data` contains encrypted Kiro auth, profile, and client-registration snapshots.
+- `kiro.limits` contains cached Kiro usage data.
+- `minimax.data` contains encrypted MiniMax Agent config snapshots.
+- `minimax.limits` contains cached MiniMax quota and credit data.
+- The nested encrypted format is a hard cut. Do not add flat-vault, plaintext, or runtime compatibility migrations.
+- Preserve isolated corrupt entries across unrelated writes. They must remain deletable but not loadable, syncable,
+  refreshable, or exportable.
 - Default app data path logic lives in `src/config.ts`.
 
 ## Verification
@@ -60,10 +83,10 @@ Do not reintroduce root launcher shims or barrel `index.ts` files. Import concre
 Before finishing code changes, run:
 
 ```sh
-bun run typecheck
 bun run lint
+bun run typecheck
 bun test
 bun build src/server.ts --target=bun --outdir /tmp/dondo-build
 ```
 
-All three must pass without TypeScript errors, Biome errors, or Biome warnings.
+All four must pass. `bun run lint` is the full Biome formatting, lint, and assist gate, with warnings treated as errors.
