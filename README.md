@@ -35,6 +35,17 @@ bunx dondo-donuts
 Open the URL printed by the server. Dondo starts at `http://127.0.0.1:3000` by default and tries the next available
 port when that port is occupied. It never binds to a non-loopback interface.
 
+To cycle a saved MiniMax or Kiro account without opening the UI, use the CLI:
+
+```sh
+bunx dondo-donuts minimax next
+bunx dondo-donuts kiro next
+```
+
+Add `--json` for a stable machine-readable result. Cycling uses deterministic saved-account order, wraps after the
+last account, and skips unavailable sessions until one loads. It never accepts an account label and never lists or
+prints saved labels, account identities, indices, or credentials. Kiro must be fully quit before cycling.
+
 ## Using Dondo
 
 Open a platform tab and use `Save current` while that application's desired account is live. A saved account can then
@@ -118,8 +129,9 @@ failed stream is aborted so a partial file is not committed. Other browsers use 
 | Kiro | `~/.aws/sso/cache/kiro-auth-token.json` plus related profile/registration | Agentic-request usage |
 | MiniMax | `~/Library/Application Support/MiniMax Agent/minimax-agent-config.json` | 5-hour, weekly, and credit balance |
 
-MiniMax also provides `Daily Check-In`. A successful claim invalidates the affected cached limits so the credit balance
-can be refreshed.
+Loading a MiniMax account automatically performs its Daily Check-In before replacing the live configuration. The
+MiniMax toolbar can check in every saved account with concurrency bounded to three; failures are isolated and reported
+only as aggregate counts. Successful claims invalidate affected cached limits so credit balances can be refreshed.
 
 Codex snapshots follow the current Codex CLI auth contract: API-key accounts use `auth_mode: "apikey"` and ChatGPT
 accounts use `auth_mode: "chatgpt"`. The historical `auth_mode: "api_key"` spelling is rejected; sign in again with a
@@ -178,6 +190,7 @@ The complete route surface is:
   `{ "key": "label" }`.
 - `POST /api/antigravity/clear` and `POST /api/kiro/clear` with an empty JSON object.
 - `POST /api/minimax/check-in` with optional `{ "key": "label" }`.
+- `POST /api/minimax/check-in-all` with an empty JSON object; its response contains aggregate counts only.
 
 The server accepts at most **16 KiB** per JSON request body, serializes at most **8 MiB** per export attachment, and
 reads at most **16 MiB** from the vault file. Local API traffic is rate limited to 120 requests per 10 seconds.

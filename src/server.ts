@@ -8,12 +8,20 @@ import {
     loadAntigravity,
     saveAntigravity,
 } from './antigravity/service.ts';
+import { runCli } from './cli.ts';
 import { clineState, deleteCline, loadCline, saveCline } from './cline/service.ts';
 import { codexState, deleteCodex, loadCodex, saveCodex } from './codex/service.ts';
 import { HOST, PORT } from './config.ts';
 import { errorMessage, errorStatus, isPublicError, publicError } from './errors.ts';
 import { clearKiro, deleteKiro, kiroState, loadKiro, saveKiro } from './kiro/service.ts';
-import { checkInMinimax, deleteMinimax, loadMinimax, minimaxState, saveMinimax } from './minimax/service.ts';
+import {
+    checkInAllMinimax,
+    checkInMinimax,
+    deleteMinimax,
+    loadMinimax,
+    minimaxState,
+    saveMinimax,
+} from './minimax/service.ts';
 import { type ExportPlatform, type ExportWalletResult, exportPlatformWallet } from './storage/export.ts';
 import { renderHtml } from './ui/html.ts';
 
@@ -514,8 +522,24 @@ const routes = new Map<string, Route>([
             handler: async (req) => json(await checkInMinimax(await optionalKey(req))),
         },
     ],
+    [
+        'POST /api/minimax/check-in-all',
+        {
+            handler: async (req) => {
+                if (Object.keys(await body(req)).length > 0) {
+                    throw publicError(400, 'JSON body must be empty');
+                }
+                return json(await checkInAllMinimax());
+            },
+        },
+    ],
     keyedMutationRoute('minimax', 'save', saveMinimax),
-    keyedMutationRoute('minimax', 'load', loadMinimax),
+    [
+        'POST /api/minimax/load',
+        {
+            handler: async (req) => json({ checkIn: await loadMinimax(await requiredKey(req)), ok: true }),
+        },
+    ],
     keyedMutationRoute('minimax', 'delete', deleteMinimax),
 ]);
 
@@ -626,5 +650,10 @@ export const startServer = async () => {
 };
 
 if (import.meta.main) {
-    await startServer();
+    const exitCode = await runCli(process.argv.slice(2));
+    if (exitCode === null) {
+        await startServer();
+    } else {
+        process.exitCode = exitCode;
+    }
 }

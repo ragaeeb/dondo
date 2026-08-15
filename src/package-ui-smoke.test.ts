@@ -50,6 +50,16 @@ const runCommand = async (argv: string[], cwd: string) => {
     return { stderrText, stdoutText };
 };
 
+const runCommandResult = async (argv: string[], cwd: string, env: Record<string, string>) => {
+    const proc = Bun.spawn(argv, { cwd, env, stderr: 'pipe', stdout: 'pipe' });
+    const [exitCode, stdoutText, stderrText] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+    ]);
+    return { exitCode, stderrText, stdoutText };
+};
+
 const waitForHealthyUi = async (url: string) => {
     const deadline = Date.now() + TIMEOUT_MS;
     let lastError = '';
@@ -139,6 +149,28 @@ describe('packaged UI smoke', () => {
                     stderrPromise.catch(() => ''),
                 ]);
             }
+        } finally {
+            await rm(tempDir, { force: true, recursive: true });
+        }
+    }, 60_000);
+
+    it('should dispatch the packaged bunx account-cycle CLI without exposing account inventory', async () => {
+        const manifest = (await Bun.file('package.json').json()) as PackageManifest;
+        const tempDir = await mkdtemp(join(tmpdir(), 'dondo-packaged-cli-smoke-'));
+        try {
+            await runCommand(['bun', 'pm', 'pack', '--destination', tempDir], process.cwd());
+            const tarball = packageTarballPath(tempDir, manifest);
+            const result = await runCommandResult(
+                ['bunx', '--package', tarball, manifest.name, 'minimax', 'next', '--json'],
+                tempDir,
+                { ...process.env, DONDO_DATA_DIR: join(tempDir, 'data') },
+            );
+
+            expect(result.exitCode).toBe(1);
+            expect(result.stdoutText).toBe('');
+            expect(result.stderrText).toEndWith('No saved MiniMax account could be loaded\n');
+            expect(`${result.stdoutText}${result.stderrText}`).not.toContain('accounts');
+            expect(`${result.stdoutText}${result.stderrText}`).not.toContain('token');
         } finally {
             await rm(tempDir, { force: true, recursive: true });
         }

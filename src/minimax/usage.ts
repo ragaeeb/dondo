@@ -61,6 +61,11 @@ export type MiniMaxCheckInResult = {
     status: 'claimed' | 'claimable' | 'disabled' | 'upcoming';
 };
 
+export type MiniMaxIdentityOptions = {
+    onRealUserIdResolved?: (realUserId: string) => Promise<void> | void;
+    realUserId?: string;
+};
+
 const REQUEST_TIMEOUT_MS = 15_000;
 const REMAINS_PATH = '/v1/api/openplatform/coding_plan/remains';
 const NO_TOKEN_PLAN_STATUS = 2062;
@@ -236,13 +241,14 @@ const signedAgentRequest = async (
     if (!userId) {
         return null;
     }
-    const timestamp = Math.floor(Date.now() / 1_000) * 1_000;
-    const unix = Math.floor(timestamp / 1_000);
+    const unix = Math.floor(Date.now() / 1_000) * 1_000;
+    const timestamp = Math.floor(unix / 1_000);
     const uuid = (await miniMaxUniqueUserId()) || '0';
     const params = new URLSearchParams({
         app_id: '3001',
         biz_id: '3',
         browser_name: 'Chrome',
+        client: 'desktop',
         device_id: '12345678',
         device_platform: 'web',
         is_desktop: '1',
@@ -261,11 +267,10 @@ const signedAgentRequest = async (
     return fetch(new URL(requestPath, MINIMAX_AGENT_URL), {
         headers: {
             'Content-Type': 'application/json',
-            client: 'desktop',
             token: accessToken,
-            'x-signature': md5(`${unix}${SIGNATURE_SECRET}${body}`),
-            'x-timestamp': String(unix),
-            yy: md5(`${encodeURIComponent(requestPath)}_${body || '{}'}${md5(String(timestamp))}ooui`),
+            'x-signature': md5(`${timestamp}${SIGNATURE_SECRET}${body}`),
+            'x-timestamp': String(timestamp),
+            yy: md5(`${encodeURIComponent(requestPath)}_${body || '{}'}${md5(String(unix))}ooui`),
         },
         ...(method === 'POST' ? { body } : {}),
         method,
@@ -452,42 +457,61 @@ export const usageToLimitResult = (payload: unknown): LimitResult => {
     return { expires: weekly?.resetTime ?? interval?.resetTime ?? '', models, ok: true, tier: 'MiniMax Code' };
 };
 
+const checkInDay = (rawDay: unknown, dayNumbers: Set<number>): MiniMaxCheckInDay | null => {
+    if (!isRecord(rawDay)) {
+        return null;
+    }
+    const dayNo = typeof rawDay.day_no === 'number' && Number.isFinite(rawDay.day_no) ? rawDay.day_no : undefined;
+    const points = typeof rawDay.points === 'number' && Number.isFinite(rawDay.points) ? rawDay.points : undefined;
+    const status = typeof rawDay.status === 'number' && Number.isFinite(rawDay.status) ? rawDay.status : undefined;
+    if (
+        dayNo === undefined ||
+        points === undefined ||
+        status === undefined ||
+        !Number.isInteger(dayNo) ||
+        !Number.isInteger(status) ||
+        dayNo < 1 ||
+        dayNo > 7 ||
+        dayNumbers.has(dayNo) ||
+        points < 0 ||
+        status < 1 ||
+        status > 4 ||
+        typeof rawDay.is_today !== 'boolean'
+    ) {
+        return null;
+    }
+    dayNumbers.add(dayNo);
+    return {
+        dayNo,
+        isToday: rawDay.is_today,
+        points,
+        status,
+    };
+};
+
 const checkInPanel = (value: unknown): MiniMaxCheckInPanel | null => {
     if (!isRecord(value)) {
         return null;
     }
-    const scene = finiteNumber(value.scene);
+    const scene = typeof value.scene === 'number' && Number.isFinite(value.scene) ? value.scene : undefined;
     const rawDays = Array.isArray(value.days) ? value.days : [];
+    const dayNumbers = new Set<number>();
     const days = rawDays.flatMap((rawDay) => {
-        if (!isRecord(rawDay)) {
-            return [];
-        }
-        const dayNo = finiteNumber(rawDay.day_no);
-        const points = finiteNumber(rawDay.points);
-        const status = finiteNumber(rawDay.status);
-        if (
-            dayNo === undefined ||
-            points === undefined ||
-            status === undefined ||
-            !Number.isInteger(dayNo) ||
-            !Number.isInteger(status) ||
-            dayNo < 1 ||
-            points < 0 ||
-            status < 1 ||
-            status > 4
-        ) {
-            return [];
-        }
-        return [
-            {
-                dayNo,
-                isToday: rawDay.is_today === true,
-                points,
-                status,
-            },
-        ];
+        const day = checkInDay(rawDay, dayNumbers);
+        return day ? [day] : [];
     });
-    return scene === undefined || !Number.isInteger(scene) || scene < 0 || days.length === 0 ? null : { days, scene };
+    const claimableDays = days.filter((day) => day.status === 2).length;
+    const todayDays = days.filter((day) => day.isToday).length;
+    return scene === undefined ||
+        !Number.isInteger(scene) ||
+        scene < 0 ||
+        scene > 4 ||
+        rawDays.length !== 7 ||
+        days.length !== 7 ||
+        claimableDays > 1 ||
+        todayDays > 1
+        ? null
+        : { days, scene };
 };
 
 const checkInResponsePayload = async (response: Response, label: string) => {
@@ -526,12 +550,13 @@ const checkInStatus = (status: number): MiniMaxCheckInResult['status'] => {
     return 'upcoming';
 };
 
-const resolvedIdentity = async (accessToken: string) => {
+const resolvedIdentity = async (accessToken: string, onResolved?: MiniMaxIdentityOptions['onRealUserIdResolved']) => {
     const identity = await resolveAgentIdentity(accessToken);
     if (!identity) {
         throw new Error('Saved MiniMax access token has no readable user identity');
     }
     if (!('response' in identity)) {
+        await onResolved?.(identity.realUserId);
         return identity.realUserId;
     }
     await discardResponse(identity.response);
@@ -541,10 +566,26 @@ const resolvedIdentity = async (accessToken: string) => {
     throw new Error(`MiniMax account identity request failed with HTTP ${identity.response.status}`);
 };
 
-const currentCheckIn = async (accessToken: string, realUserId: string) => {
+export const resolveMiniMaxRealUserId = async (config: MiniMaxConfig) => {
+    return resolvedIdentity(config.tokens.accessToken);
+};
+
+class MiniMaxCachedIdentityError extends Error {}
+
+const currentCheckIn = async (accessToken: string, realUserId: string, mayRefreshIdentity = false) => {
     const response = await signedAgentRequest(accessToken, SIGN_IN_STATUS_PATH, 'GET', realUserId);
     if (!response) {
         throw new Error('MiniMax account state request failed');
+    }
+    if (
+        mayRefreshIdentity &&
+        response.status >= 400 &&
+        response.status < 500 &&
+        response.status !== 401 &&
+        response.status !== 403
+    ) {
+        await discardResponse(response);
+        throw new MiniMaxCachedIdentityError('Saved MiniMax account identity was rejected');
     }
     const payload = await checkInResponsePayload(response, 'check-in status');
     const panel = checkInPanel(isRecord(payload) ? payload.data : undefined);
@@ -567,44 +608,78 @@ const unclaimedResult = (today: MiniMaxCheckInDay, panel: MiniMaxCheckInPanel): 
     status: checkInStatus(today.status),
 });
 
-const claimedResult = async (
-    accessToken: string,
-    realUserId: string,
-    today: MiniMaxCheckInDay,
-    statusPanel: MiniMaxCheckInPanel,
-): Promise<MiniMaxCheckInResult> => {
+const claimedResult = async (accessToken: string, realUserId: string): Promise<MiniMaxCheckInResult> => {
     const response = await signedAgentRequest(accessToken, SIGN_IN_CLAIM_PATH, 'POST', realUserId);
     if (!response) {
         throw new Error('MiniMax check-in request failed');
     }
     const payload = await checkInResponsePayload(response, 'check-in claim');
     const data = isRecord(payload) && isRecord(payload.data) ? payload.data : {};
-    const claimResult = finiteNumber(data.claim_result);
-    if (claimResult !== 1 && claimResult !== 2) {
+    const claimResult = data.claim_result;
+    const claimId = data.claim_id;
+    const dayNo = data.day_no;
+    const expireAtMs = data.expire_at_ms;
+    const points = data.points;
+    const panel = checkInPanel(data.panel);
+    if (
+        typeof claimId !== 'string' ||
+        claimId.length === 0 ||
+        (claimResult !== 1 && claimResult !== 2) ||
+        typeof dayNo !== 'number' ||
+        !Number.isInteger(dayNo) ||
+        dayNo < 1 ||
+        dayNo > 7 ||
+        typeof expireAtMs !== 'number' ||
+        !Number.isFinite(expireAtMs) ||
+        typeof points !== 'number' ||
+        !Number.isFinite(points) ||
+        points < 0 ||
+        !panel
+    ) {
         throw new Error('MiniMax check-in response did not include a valid claim result');
     }
-    const dayNo = finiteNumber(data.day_no);
-    const points = finiteNumber(data.points);
     return {
         alreadyClaimed: claimResult === 2,
         claimed: claimResult === 1,
-        dayNo: dayNo !== undefined && Number.isInteger(dayNo) && dayNo >= 1 ? dayNo : today.dayNo,
-        panel: checkInPanel(data.panel) ?? statusPanel,
-        points: points !== undefined && points >= 0 ? points : today.points,
+        dayNo,
+        panel,
+        points,
         status: 'claimed',
     };
 };
 
-const performMiniMaxCheckIn = async (accessToken: string): Promise<MiniMaxCheckInResult> => {
-    const realUserId = await resolvedIdentity(accessToken);
-    const { panel, today } = await currentCheckIn(accessToken, realUserId);
+const checkInWithIdentity = async (accessToken: string, realUserId: string, mayRefreshIdentity = false) => {
+    const { panel, today } = await currentCheckIn(accessToken, realUserId, mayRefreshIdentity);
     if (today.status !== 2) {
         return unclaimedResult(today, panel);
     }
-    return claimedResult(accessToken, realUserId, today, panel);
+    return claimedResult(accessToken, realUserId);
 };
 
-export const checkInMiniMax = async (config: MiniMaxConfig): Promise<MiniMaxCheckInResult> => {
+const performMiniMaxCheckIn = async (
+    accessToken: string,
+    options: MiniMaxIdentityOptions,
+): Promise<MiniMaxCheckInResult> => {
+    const suppliedRealUserId = options.realUserId?.trim();
+    if (!suppliedRealUserId) {
+        const realUserId = await resolvedIdentity(accessToken, options.onRealUserIdResolved);
+        return checkInWithIdentity(accessToken, realUserId);
+    }
+    try {
+        return await checkInWithIdentity(accessToken, suppliedRealUserId, true);
+    } catch (error) {
+        if (!(error instanceof MiniMaxCachedIdentityError)) {
+            throw error;
+        }
+        const realUserId = await resolvedIdentity(accessToken, options.onRealUserIdResolved);
+        return checkInWithIdentity(accessToken, realUserId);
+    }
+};
+
+export const checkInMiniMax = async (
+    config: MiniMaxConfig,
+    options: MiniMaxIdentityOptions = {},
+): Promise<MiniMaxCheckInResult> => {
     const accessToken = config.tokens.accessToken;
     const tokenIdentity = miniMaxTokenIdentity(accessToken);
     if (!tokenIdentity) {
@@ -614,7 +689,7 @@ export const checkInMiniMax = async (config: MiniMaxConfig): Promise<MiniMaxChec
     if (existing) {
         return existing;
     }
-    const pending = performMiniMaxCheckIn(accessToken);
+    const pending = performMiniMaxCheckIn(accessToken, options);
     checkInPromises.set(tokenIdentity, pending);
     try {
         return await pending;
@@ -743,8 +818,34 @@ const fetchAgentIdentity = async (accessToken: string): Promise<AgentIdentityRes
     }
 };
 
-export const fetchMiniMaxLimits = async (config: MiniMaxConfig): Promise<LimitResult> => {
-    const accessToken = config.tokens.accessToken;
+const fetchLimitsWithIdentity = async (accessToken: string, realUserId: string): Promise<LimitResult> => {
+    const state = await fetchWorkspaceState(accessToken, realUserId);
+    if ('ok' in state) {
+        return state;
+    }
+    if (!state.hasTokenPlan) {
+        const membership = await fetchMembership(accessToken, realUserId);
+        if (membership.fatal) {
+            return membership.fatal;
+        }
+        return membership.creditBalance === undefined
+            ? freeAccessResult()
+            : workspaceToLimitResult({ creditBalance: membership.creditBalance, hasTokenPlan: false });
+    }
+    const [membership, usage] = await Promise.all([
+        fetchMembership(accessToken, realUserId),
+        fetchPlanUsage(accessToken),
+    ]);
+    if (membership.fatal) {
+        return membership.fatal;
+    }
+    return membership.creditBalance === undefined ? usage : addCreditModel(usage, membership.creditBalance);
+};
+
+const resolvedLimitIdentity = async (
+    accessToken: string,
+    onResolved?: MiniMaxIdentityOptions['onRealUserIdResolved'],
+): Promise<LimitResult | string> => {
     const identity = await fetchAgentIdentity(accessToken);
     if (!identity) {
         return { error: 'Saved MiniMax access token has no readable user identity', ok: false };
@@ -755,25 +856,33 @@ export const fetchMiniMaxLimits = async (config: MiniMaxConfig): Promise<LimitRe
     if ('response' in identity) {
         return { error: 'MiniMax account identity request failed', ok: false };
     }
-    const state = await fetchWorkspaceState(accessToken, identity.realUserId);
-    if ('ok' in state) {
-        return state;
+    await onResolved?.(identity.realUserId);
+    return identity.realUserId;
+};
+
+const limitResultMayHaveStaleIdentity = (result: LimitResult) => {
+    return (
+        !result.ok &&
+        (result.error === 'MiniMax account state request failed with HTTP 400' ||
+            result.error === 'MiniMax account state request failed with HTTP 404' ||
+            result.error === 'MiniMax account state request was rejected')
+    );
+};
+
+export const fetchMiniMaxLimits = async (
+    config: MiniMaxConfig,
+    options: MiniMaxIdentityOptions = {},
+): Promise<LimitResult> => {
+    const accessToken = config.tokens.accessToken;
+    const suppliedRealUserId = options.realUserId?.trim();
+    if (!suppliedRealUserId) {
+        const identity = await resolvedLimitIdentity(accessToken, options.onRealUserIdResolved);
+        return typeof identity === 'string' ? fetchLimitsWithIdentity(accessToken, identity) : identity;
     }
-    if (!state.hasTokenPlan) {
-        const membership = await fetchMembership(accessToken, identity.realUserId);
-        if (membership.fatal) {
-            return membership.fatal;
-        }
-        return membership.creditBalance === undefined
-            ? freeAccessResult()
-            : workspaceToLimitResult({ creditBalance: membership.creditBalance, hasTokenPlan: false });
+    const result = await fetchLimitsWithIdentity(accessToken, suppliedRealUserId);
+    if (!limitResultMayHaveStaleIdentity(result)) {
+        return result;
     }
-    const [membership, usage] = await Promise.all([
-        fetchMembership(accessToken, identity.realUserId),
-        fetchPlanUsage(accessToken),
-    ]);
-    if (membership.fatal) {
-        return membership.fatal;
-    }
-    return membership.creditBalance === undefined ? usage : addCreditModel(usage, membership.creditBalance);
+    const identity = await resolvedLimitIdentity(accessToken, options.onRealUserIdResolved);
+    return typeof identity === 'string' ? fetchLimitsWithIdentity(accessToken, identity) : identity;
 };

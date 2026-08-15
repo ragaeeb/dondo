@@ -143,6 +143,114 @@ it('should save and load Kiro auth with encrypted vault storage', async () => {
     }
 });
 
+it('should cycle Kiro accounts in label order, skip corruption, and keep diagnostics label-free', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-kiro-cycle-test-'));
+    const authPath = join(dir, 'kiro-auth-token.json');
+    const script = `
+        const { cycleNextKiro, saveKiro } = await import('./src/kiro/service.ts');
+        const { updateVaultSection } = await import('./src/storage/vault.ts');
+        const authPath = process.env.KIRO_AUTH_PATH;
+        const writeAuth = (id) => Bun.write(authPath, JSON.stringify({
+            accessToken: 'access-' + id, authMethod: 'IdC', profileArn: 'arn:' + id, refreshToken: 'refresh-' + id,
+        }));
+        await writeAuth('gamma');
+        await saveKiro('gamma');
+        await writeAuth('alpha');
+        await saveKiro('alpha');
+        await writeAuth('beta');
+        await saveKiro('beta');
+        await updateVaultSection('kiro', (section) => {
+            section.data.beta.auth = '{';
+            return { result: undefined };
+        });
+        await writeAuth('alpha');
+        const diagnostics = [];
+        const result = await cycleNextKiro({ onSkip: () => diagnostics.push('skipped') });
+        const live = JSON.parse(await Bun.file(authPath).text());
+        console.log(JSON.stringify({ diagnostics, healed: result.healed, live: live.profileArn }));
+    `;
+    try {
+        const proc = Bun.spawn([process.execPath, '--eval', script], {
+            cwd: process.cwd(),
+            env: {
+                ...process.env,
+                DONDO_VAULT: join(dir, 'vault.json'),
+                KIRO_AUTH_PATH: authPath,
+                KIRO_PROCESS_NAME: 'dondo-kiro-cycle-test-not-running',
+                KIRO_PROFILE_PATH: join(dir, 'profile.json'),
+            },
+            stderr: 'pipe',
+            stdout: 'pipe',
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+            proc.exited,
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+        ]);
+        if (exitCode !== 0) {
+            throw new Error(stderr);
+        }
+        expect(JSON.parse(stdout)).toEqual({ diagnostics: ['skipped'], healed: true, live: 'arn:gamma' });
+        expect(stdout).not.toContain('beta');
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});
+
+it('should preserve the original live Kiro account when every saved candidate is revoked', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-kiro-cycle-failure-test-'));
+    const authPath = join(dir, 'kiro-auth-token.json');
+    const server = Bun.serve({ fetch: () => new Response('', { status: 401 }), port: 0 });
+    const script = `
+        const { cycleNextKiro, saveKiro } = await import('./src/kiro/service.ts');
+        const authPath = process.env.KIRO_AUTH_PATH;
+        const writeAuth = (id) => Bun.write(authPath, JSON.stringify({
+            accessToken: 'access-' + id, authMethod: 'social', profileArn: 'arn:' + id, refreshToken: 'refresh-' + id,
+        }));
+        await writeAuth('alpha');
+        await saveKiro('alpha');
+        await writeAuth('beta');
+        await saveKiro('beta');
+        await writeAuth('original');
+        const original = await Bun.file(authPath).text();
+        let skipped = 0;
+        const error = await cycleNextKiro({ onSkip: () => { skipped += 1; } }).catch((value) => String(value));
+        console.log(JSON.stringify({ error, preserved: await Bun.file(authPath).text() === original, skipped }));
+    `;
+    try {
+        const proc = Bun.spawn([process.execPath, '--eval', script], {
+            cwd: process.cwd(),
+            env: {
+                ...process.env,
+                DONDO_VAULT: join(dir, 'vault.json'),
+                KIRO_AUTH_PATH: authPath,
+                KIRO_AUTH_REFRESH_URL: `http://127.0.0.1:${server.port}`,
+                KIRO_PROCESS_NAME: 'dondo-kiro-cycle-test-not-running',
+                KIRO_PROFILE_PATH: join(dir, 'profile.json'),
+            },
+            stderr: 'pipe',
+            stdout: 'pipe',
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+            proc.exited,
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+        ]);
+        if (exitCode !== 0) {
+            throw new Error(stderr);
+        }
+        expect(JSON.parse(stdout)).toEqual({
+            error: 'Error: No saved Kiro account could be loaded',
+            preserved: true,
+            skipped: 2,
+        });
+        expect(stdout).not.toMatch(/alpha|beta|refresh-/u);
+    } finally {
+        server.stop(true);
+        await rm(dir, { force: true, recursive: true });
+    }
+});
+
 it('should snapshot and restore Kiro client registration credentials', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dondo-kiro-idc-test-'));
     const authPath = join(dir, 'kiro-auth-token.json');

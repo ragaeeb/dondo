@@ -105,6 +105,7 @@ const PLATFORM_CODECS: Record<VaultPlatform, PlatformCodec> = {
         fields: [
             { name: 'config', secret: true },
             { name: 'createdAt', timestamp: true },
+            { name: 'realUserId', optional: true, secret: true },
             { name: 'updatedAt', timestamp: true },
         ],
     },

@@ -207,6 +207,21 @@ it('should reject unsupported API methods before reading a body', async () => {
     expect(await json(response)).toEqual({ error: 'Method not allowed' });
 });
 
+it('should expose MiniMax check-in-all only as an empty-body POST action', async () => {
+    const getResponse = await app(new Request('http://127.0.0.1:3000/api/minimax/check-in-all'));
+    expect(getResponse.status).toBe(405);
+
+    const keyedResponse = await app(
+        new Request('http://127.0.0.1:3000/api/minimax/check-in-all', {
+            body: '{"key":"private-label"}',
+            headers: { 'Content-Type': 'application/json' },
+            method: 'POST',
+        }),
+    );
+    expect(keyedResponse.status).toBe(400);
+    expect(await json(keyedResponse)).toEqual({ error: 'JSON body must be empty' });
+});
+
 it('should reject malformed JSON bodies before service calls', async () => {
     const response = await app(
         new Request('http://127.0.0.1:3000/api/antigravity/save', {
