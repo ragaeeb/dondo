@@ -60,8 +60,10 @@
         "url": "git+https://github.com/ragaeeb/dondo.git"
     },
     "scripts": {
+        "bench:vault": "bun scripts/benchmark-vault.ts",
         "build": "bun scripts/build.ts",
         "dev": "bun scripts/dev.ts",
+        "dev:mock": "bun scripts/dev.ts --mock",
         "fix": "biome check . --write --enforce-assist=true",
         "format": "biome format . --write",
         "lint": "biome check . --enforce-assist=true --error-on-warnings",

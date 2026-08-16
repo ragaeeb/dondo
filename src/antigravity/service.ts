@@ -6,7 +6,7 @@ import {
     stateVersion,
 } from '../account-state.ts';
 import { createAsyncQueue } from '../async-queue.ts';
-import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_PROCESS_NAME, ANTIGRAVITY_SERVICE, VAULT_PATH } from '../config.ts';
+import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_PROCESS_NAME, ANTIGRAVITY_SERVICE, DEV_MODE, VAULT_PATH } from '../config.ts';
 import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { isProcessRunning } from '../process.ts';
 import { readVaultSection, updateVaultSection } from '../storage/vault.ts';
@@ -54,6 +54,13 @@ const isReadableSnapshot = (snapshot: Snapshot) => {
     return isReadableCredential(snapshot) && Boolean(snapshot.identity.trim());
 };
 
+const resolveIdentity = async (credential: AntigravityCredential): Promise<{ identity: string; password?: string }> => {
+    if (DEV_MODE === 'mock') {
+        return { identity: 'mock-account' };
+    }
+    return resolveGoogleIdentity(credential);
+};
+
 const liveIdentity = async (credential: AntigravityCredential | null) => {
     if (!credential || !isReadableCredential(credential)) {
         return null;
@@ -62,7 +69,7 @@ const liveIdentity = async (credential: AntigravityCredential | null) => {
     if (liveIdentityCache?.passwordVersion === passwordVersion) {
         return liveIdentityCache.identity;
     }
-    const resolved = await resolveGoogleIdentity(credential);
+    const resolved = await resolveIdentity(credential);
     liveIdentityCache = { identity: resolved.identity, passwordVersion };
     return resolved.identity;
 };
@@ -94,6 +101,9 @@ const fetchAntigravityLimitUpdates = async (section: PlatformVault, force: boole
     if (targetKey) {
         assertReadableAccount(section, targetKey);
     }
+    if (DEV_MODE === 'mock') {
+        return [];
+    }
     const readableData = Object.fromEntries(
         Object.entries(section.data).filter(([, snapshot]) => isReadableSnapshot(snapshot)),
     );
@@ -119,7 +129,7 @@ const saveAntigravityOperation = async (key: string) => {
     if (!isReadableCredential(credential)) {
         throw publicError(400, 'Current Antigravity credential payload is invalid');
     }
-    const resolved = await resolveGoogleIdentity(credential).catch(() => {
+    const resolved = await resolveIdentity(credential).catch(() => {
         throw publicError(502, 'Could not verify the current Antigravity account identity');
     });
     const snapshot: Snapshot = {

@@ -1,9 +1,18 @@
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import packageJson from '../package.json';
 
 const env = (key: string) => {
     const value = process.env[key]?.trim();
     return value ? value : undefined;
+};
+
+const parseDevMode = () => {
+    const value = env('DONDO_DEV_MODE') ?? 'standard';
+    if (value !== 'standard' && value !== 'mock') {
+        throw new Error(`Invalid DONDO_DEV_MODE: ${value}`);
+    }
+    return value as 'mock' | 'standard';
 };
 
 if (process.platform !== 'darwin') {
@@ -25,6 +34,10 @@ const parsePort = () => {
 
 export const HOST = '127.0.0.1';
 export const PORT = parsePort();
+export const APP_VERSION = packageJson.version;
+export const DEV_MODE = parseDevMode();
+export const KEYCHAIN_PROVIDER = DEV_MODE === 'mock' ? 'mock-memory' : 'macos-keychain';
+export const HOME_DIR = homedir();
 export const DATA_DIR = env('DONDO_DATA_DIR') ?? appDataDir();
 export const VAULT_PATH = env('DONDO_VAULT') ?? join(DATA_DIR, 'vault.json');
 export const CODEX_AUTH_PATH = env('CODEX_AUTH_PATH') ?? join(homedir(), '.codex', 'auth.json');
@@ -62,6 +75,13 @@ export const VAULT_KEY_ACCOUNT = 'vault-key';
 
 export const ANTIGRAVITY_SERVICE = env('ANTIGRAVITY_SERVICE') ?? 'gemini';
 export const ANTIGRAVITY_ACCOUNT = env('ANTIGRAVITY_ACCOUNT') ?? 'antigravity';
+export const ANTIGRAVITY_LOCAL_STATE_PATHS = [
+    join(HOME_DIR, '.antigravity-agent', 'cloud_accounts.db'),
+    join(HOME_DIR, '.gemini', 'antigravity'),
+    join(HOME_DIR, '.gemini', 'antigravity-ide'),
+    join(HOME_DIR, '.gemini', 'antigravity-backup'),
+    join(HOME_DIR, 'Library', 'Application Support', 'Antigravity'),
+];
 
 export const ANTIGRAVITY_VERSION = env('ANTIGRAVITY_VERSION') ?? '2.0.3';
 export const ANTIGRAVITY_PROCESS_NAME = env('ANTIGRAVITY_PROCESS_NAME') ?? 'Antigravity';

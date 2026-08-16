@@ -13,6 +13,13 @@ bun run dev
 The development watcher restarts the server for runtime TypeScript, TSX, CSS, package metadata, and icon changes. Test
 file edits do not restart it.
 
+Use `bun run dev:mock` for UI and local API work without real credentials. It creates a fresh temporary sandbox for the
+vault, home directory, platform files, and in-memory Keychain on each server process. The synthetic state is reset on
+restart; this mode never calls the real Keychain and is not suitable for production.
+
+Run `bun run bench:vault` only when investigating storage performance. It uses temporary synthetic vaults and reports
+read, decrypt, and update timings without touching a real vault or changing the storage format.
+
 The package entry point and HTTP server are in `src/server.ts`. Platform behavior lives in `src/antigravity/`,
 `src/codex/`, `src/cline/`, `src/kiro/`, and `src/minimax/`. Shared vault/encryption code is in `src/storage/`, shared
 types are in `src/types.ts`, configuration is in `src/config.ts`, and the Preact UI is in `src/ui/`.

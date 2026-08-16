@@ -183,6 +183,7 @@ require `Content-Type: application/json` and a top-level object.
 
 The complete route surface is:
 
+- `GET /api/version` for the local API version contract.
 - `GET /api/{platform}/state` for `antigravity`, `codex`, `cline`, `kiro`, and `minimax`.
 - `POST /api/{platform}/export` for all five platforms. It requires `X-Dondo-Export: 1`.
 - `POST /api/{platform}/save`, `/load`, and `/delete` for all five platforms with `{ "key": "label" }`.
@@ -217,7 +218,22 @@ bun run dev
 ```
 
 `bun run dev` restarts the local server when runtime TypeScript, TSX, CSS, package metadata, or icons change. Test-only
-edits do not restart it. Run the full gates before submitting a change:
+edits do not restart it.
+
+For contributor work that should not touch real credentials or application profiles, use:
+
+```sh
+bun run dev:mock
+```
+
+Mock development creates a fresh temporary sandbox for the vault, home directory, platform files, and in-memory
+Keychain on each server process. It seeds only a synthetic Antigravity credential, never calls the real Keychain, and
+resets when the server restarts. This mode is for local development only and is not a persistence or production mode.
+
+For opt-in storage profiling, run `bun run bench:vault`. The benchmark uses temporary synthetic vaults, reports median
+and p95 timings for representative sizes through the 4,096-account limit, and does not change the vault format.
+
+Run the full gates before submitting a change:
 
 ```sh
 bun run lint

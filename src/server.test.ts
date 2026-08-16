@@ -7,6 +7,7 @@ import {
     MAX_EXPORT_PAYLOAD_BYTES,
     MAX_JSON_BODY_BYTES,
     serveOnAvailablePort,
+    startupDiagnostics,
 } from './server.ts';
 
 const assets = {
@@ -80,6 +81,30 @@ it('should reject non-local API origins', async () => {
     );
 
     expect(response.status).toBe(403);
+});
+
+it('should expose a non-cacheable local API version contract', async () => {
+    const response = await app(new Request('http://127.0.0.1:3000/api/version'));
+    const payload = (await response.json()) as { apiVersion?: unknown; appVersion?: unknown };
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(payload).toEqual({ apiVersion: 1, appVersion: expect.any(String) });
+});
+
+it('should expose only home-contracted safe startup diagnostics', () => {
+    const diagnostics = startupDiagnostics(4321);
+    const serialized = JSON.stringify(diagnostics);
+
+    expect(diagnostics.url).toBe('http://127.0.0.1:4321');
+    expect(diagnostics.platform).toBe(process.platform);
+    expect(diagnostics.mode).toBe('standard');
+    expect(diagnostics.keychain).toBe('macos-keychain');
+    expect(diagnostics.dataDir).toMatch(/^~\//u);
+    expect(diagnostics.vault).toMatch(/^~\//u);
+    expect(serialized).not.toContain(process.env.HOME ?? '');
+    expect(serialized).not.toContain('access_token');
+    expect(serialized).not.toContain('refresh_token');
 });
 
 it('should reject a local origin on a different port', async () => {

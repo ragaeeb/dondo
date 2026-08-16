@@ -11,7 +11,7 @@ import {
 import { runCli } from './cli.ts';
 import { clineState, deleteCline, loadCline, saveCline } from './cline/service.ts';
 import { codexState, deleteCodex, loadCodex, saveCodex } from './codex/service.ts';
-import { HOST, PORT } from './config.ts';
+import { APP_VERSION, DATA_DIR, DEV_MODE, HOME_DIR, HOST, KEYCHAIN_PROVIDER, PORT, VAULT_PATH } from './config.ts';
 import { errorMessage, errorStatus, isPublicError, publicError } from './errors.ts';
 import { clearKiro, deleteKiro, kiroState, loadKiro, saveKiro } from './kiro/service.ts';
 import {
@@ -79,6 +79,7 @@ const SECURITY_HEADERS = {
 const MAX_PORT = 65_535;
 const MAX_PORT_ATTEMPTS = 20;
 const EXPORT_CONFIRMATION_HEADER = 'X-Dondo-Export';
+export const API_VERSION = 1;
 
 export const API_RATE_LIMIT_MAX = 120;
 export const MAX_EXPORT_PAYLOAD_BYTES = 8 * 1024 * 1024;
@@ -184,6 +185,21 @@ const defaultDependencies: ServerDependencies = {
     exportByteIterator: createExportByteIterator,
     exportWallet: exportPlatformWallet,
 };
+
+const displayPath = (path: string) => {
+    const homePrefix = `${HOME_DIR}/`;
+    return path === HOME_DIR ? '~' : path.startsWith(homePrefix) ? `~/${path.slice(homePrefix.length)}` : path;
+};
+
+export const startupDiagnostics = (port: number) => ({
+    apiVersion: API_VERSION,
+    dataDir: displayPath(DATA_DIR),
+    keychain: KEYCHAIN_PROVIDER,
+    mode: DEV_MODE,
+    platform: process.platform,
+    url: `http://${HOST}:${port}`,
+    vault: displayPath(VAULT_PATH),
+});
 
 const bunServerFactory: ServerFactory = (options) => Bun.serve(options);
 
@@ -474,6 +490,13 @@ const limitRefreshRoute = (platform: ExportPlatform, state: LimitState): RouteEn
     },
 ];
 
+const versionRoute: RouteEntry = [
+    'GET /api/version',
+    {
+        handler: async () => json({ apiVersion: API_VERSION, appVersion: APP_VERSION }),
+    },
+];
+
 const emptyMutationRoute = (platform: ExportPlatform, action: 'clear', mutation: EmptyMutation): RouteEntry => [
     `POST /api/${platform}/${action}`,
     {
@@ -488,6 +511,7 @@ const emptyMutationRoute = (platform: ExportPlatform, action: 'clear', mutation:
 ];
 
 const routes = new Map<string, Route>([
+    versionRoute,
     stateRoute('antigravity', antigravityState),
     exportRoute('antigravity'),
     limitRefreshRoute('antigravity', antigravityState),
@@ -644,8 +668,11 @@ export const serveOnAvailablePort = (
 export const startServer = async () => {
     const assets = await buildAssets();
     const server = serveOnAvailablePort(assets);
-
-    console.log(`Dondo running at http://${HOST}:${server.port}`);
+    const diagnostics = startupDiagnostics(server.port ?? PORT);
+    console.log(`Dondo running at ${diagnostics.url}`);
+    console.log(
+        `Dondo config: api=${diagnostics.apiVersion} mode=${diagnostics.mode} platform=${diagnostics.platform} keychain=${diagnostics.keychain} data=${diagnostics.dataDir} vault=${diagnostics.vault}`,
+    );
     return server;
 };
 

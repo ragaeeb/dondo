@@ -1,13 +1,13 @@
 import { rm } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { waitForAll } from '../async-queue.ts';
-import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_SERVICE } from '../config.ts';
+import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_LOCAL_STATE_PATHS, ANTIGRAVITY_SERVICE, DEV_MODE } from '../config.ts';
 import { publicError } from '../errors.ts';
+import { mockKeychainRun } from '../mock-keychain.ts';
 import { isRunError, run } from '../shell.ts';
 import type { AntigravityCredential } from '../types.ts';
 
 const SECURITY_PATH = '/usr/bin/security';
+const defaultRunCommand = DEV_MODE === 'mock' ? mockKeychainRun : run;
 
 export const parsePassword = (stderr: string) => {
     const match = stderr.match(/password: "((?:\\"|[^"])*)"/);
@@ -17,7 +17,7 @@ export const parsePassword = (stderr: string) => {
     return match[1]?.replace(/\\"/g, '"') ?? '';
 };
 
-export const deleteLivePassword = async (runCommand: typeof run = run) => {
+export const deleteLivePassword = async (runCommand: typeof run = defaultRunCommand) => {
     await runCommand(SECURITY_PATH, [
         'delete-generic-password',
         '-s',
@@ -61,7 +61,9 @@ const readOptionalSnapshot = async (runCommand: typeof run) => {
     });
 };
 
-export const readCurrentSnapshot = async (runCommand: typeof run = run): Promise<AntigravityCredential> => {
+export const readCurrentSnapshot = async (
+    runCommand: typeof run = defaultRunCommand,
+): Promise<AntigravityCredential> => {
     return readSnapshot(runCommand).catch(() => {
         throw publicError(500, 'Dondo could not access the current Antigravity credential in macOS Keychain');
     });
@@ -86,7 +88,7 @@ const writeAndVerifySnapshot = async (snap: AntigravityCredential, runCommand: t
     }
 };
 
-export const replaceLiveSnapshot = async (snap: AntigravityCredential, runCommand: typeof run = run) => {
+export const replaceLiveSnapshot = async (snap: AntigravityCredential, runCommand: typeof run = defaultRunCommand) => {
     const previous = await readOptionalSnapshot(runCommand);
     try {
         await writeAndVerifySnapshot(snap, runCommand);
@@ -108,20 +110,11 @@ export const replaceLiveSnapshot = async (snap: AntigravityCredential, runComman
 };
 
 export const clearLocalState = async () => {
-    const home = homedir();
-    await waitForAll(
-        [
-            join(home, '.antigravity-agent', 'cloud_accounts.db'),
-            join(home, '.gemini', 'antigravity'),
-            join(home, '.gemini', 'antigravity-ide'),
-            join(home, '.gemini', 'antigravity-backup'),
-            join(home, 'Library', 'Application Support', 'Antigravity'),
-        ].map((path) => rm(path, { force: true, recursive: true })),
-    );
+    await waitForAll(ANTIGRAVITY_LOCAL_STATE_PATHS.map((path) => rm(path, { force: true, recursive: true })));
 };
 
 export const clearLiveAuth = async (
-    runCommand: typeof run = run,
+    runCommand: typeof run = defaultRunCommand,
     clearState: typeof clearLocalState = clearLocalState,
 ) => {
     await clearState();
