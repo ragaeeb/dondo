@@ -38,20 +38,15 @@ const getAvailablePort = async () =>
     });
 
 const runCommand = async (argv: string[], cwd: string) => {
-    const proc = Bun.spawn(argv, { cwd, stderr: 'pipe', stdout: 'pipe' });
-    const [exitCode, stdoutText, stderrText] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-    ]);
+    const { exitCode, stderrText, stdoutText } = await runCommandResult(argv, cwd);
     if (exitCode !== 0) {
         throw new Error(`${argv.join(' ')} failed\n${stdoutText}\n${stderrText}`.trim());
     }
     return { stderrText, stdoutText };
 };
 
-const runCommandResult = async (argv: string[], cwd: string, env: Record<string, string>) => {
-    const proc = Bun.spawn(argv, { cwd, env, stderr: 'pipe', stdout: 'pipe' });
+const runCommandResult = async (argv: string[], cwd: string, env?: NodeJS.ProcessEnv) => {
+    const proc = Bun.spawn(argv, { cwd, ...(env ? { env } : {}), stderr: 'pipe', stdout: 'pipe' });
     const [exitCode, stdoutText, stderrText] = await Promise.all([
         proc.exited,
         new Response(proc.stdout).text(),

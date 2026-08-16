@@ -12,6 +12,8 @@ it('should keep the source icon as a bounded 512 by 512 PNG', async () => {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
     expect([...bytes.slice(0, PNG_SIGNATURE.length)]).toEqual(PNG_SIGNATURE);
+    expect(view.getUint32(8)).toBe(13);
+    expect(String.fromCharCode(...bytes.slice(12, 16))).toBe('IHDR');
     expect(view.getUint32(16)).toBe(512);
     expect(view.getUint32(20)).toBe(512);
     expect(bytes.byteLength).toBeLessThanOrEqual(MAX_ICON_BYTES);

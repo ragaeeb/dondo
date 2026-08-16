@@ -406,6 +406,39 @@ it('falls back once from a stale supplied MiniMax identity and reports the repla
     expect(resolved).toEqual(['fresh-real-user']);
 });
 
+it('refreshes a cached MiniMax identity when a successful status response rejects it', async () => {
+    const calls = { identity: 0, status: 0 };
+    const resolved: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith('/v1/api/user/info')) {
+            calls.identity += 1;
+            return Response.json({ data: { userInfo: { realUserID: 'fresh-real-user' } } });
+        }
+        if (url.pathname.endsWith('/signin/status')) {
+            calls.status += 1;
+            return url.searchParams.get('user_id') === 'stale-real-user'
+                ? Response.json({ base_resp: { status_code: 1001, status_msg: 'stale identity' } })
+                : Response.json({ data: checkInPanelPayload(3) });
+        }
+        return new Response('', { status: 500 });
+    }) as typeof fetch;
+
+    const result = await checkInMiniMax(
+        { tokens: { accessToken } },
+        {
+            onRealUserIdResolved: (realUserId) => {
+                resolved.push(realUserId);
+            },
+            realUserId: 'stale-real-user',
+        },
+    );
+
+    expect(result.status).toBe('claimed');
+    expect(calls).toEqual({ identity: 1, status: 2 });
+    expect(resolved).toEqual(['fresh-real-user']);
+});
+
 it('rejects MiniMax status panels that do not match the installed seven-day contract', async () => {
     const valid = checkInPanelPayload(3);
     const invalidPanels = [
@@ -510,6 +543,32 @@ it('falls back once from a stale supplied MiniMax identity while fetching limits
     expect(result.ok).toBe(true);
     expect(calls).toEqual({ identity: 1, state: 2 });
     expect(resolved).toEqual(['fresh-real-user']);
+});
+
+it('retries MiniMax limits after an account-state base response rejection', async () => {
+    const calls = { identity: 0, state: 0 };
+    globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith('/v1/api/user/info')) {
+            calls.identity += 1;
+            return Response.json({ data: { userInfo: { realUserID: 'fresh-real-user' } } });
+        }
+        if (url.pathname.endsWith('/matrix/api/v1/user/get_user_extra_info')) {
+            calls.state += 1;
+            return url.searchParams.get('user_id') === 'stale-real-user'
+                ? Response.json({ base_resp: { status_code: 1001, status_msg: 'stale identity' } })
+                : Response.json({ workspaces: [{ has_token_plan: false, selected: true }] });
+        }
+        if (url.pathname.endsWith('/matrix/api/v1/commerce/get_membership_info')) {
+            return Response.json({ op_credit_summary: { total_remaining_amount: 10 } });
+        }
+        return new Response('', { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchMiniMaxLimits({ tokens: { accessToken } }, { realUserId: 'stale-real-user' });
+
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual({ identity: 1, state: 2 });
 });
 
 it('does not claim when MiniMax check-in status is already claimed', async () => {

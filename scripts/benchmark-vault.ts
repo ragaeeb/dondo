@@ -41,6 +41,11 @@ export const shouldInvestigate = (p95Ms: number, thresholdMs = STORAGE_INVESTIGA
     return p95Ms > thresholdMs;
 };
 
+export const benchmarkMetric = (samples: readonly number[]): BenchmarkMetric => ({
+    medianMs: Number(percentile(samples, 0.5).toFixed(2)),
+    p95Ms: percentile(samples, 0.95),
+});
+
 const elapsedMs = async (operation: () => Promise<unknown>) => {
     const started = Bun.nanoseconds();
     await operation();
@@ -53,10 +58,7 @@ const measure = async (operation: () => Promise<unknown>): Promise<BenchmarkMetr
     for (let index = 0; index < SAMPLE_COUNT; index += 1) {
         samples.push(await elapsedMs(operation));
     }
-    return {
-        medianMs: Number(percentile(samples, 0.5).toFixed(2)),
-        p95Ms: Number(percentile(samples, 0.95).toFixed(2)),
-    };
+    return benchmarkMetric(samples);
 };
 
 const seedAntigravity = async (count: number, path: string) => {

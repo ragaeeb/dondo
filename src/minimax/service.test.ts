@@ -332,6 +332,66 @@ it('should cycle MiniMax accounts by label and heal past an unauthorized candida
     }
 });
 
+it('should switch MiniMax accounts when check-in has a transient failure', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-minimax-cycle-transient-test-'));
+    const configPath = join(dir, 'minimax-agent-config.json');
+    const vaultPath = join(dir, 'vault.json');
+    const script = `
+        const token = (id, suffix) =>
+            'header.' + Buffer.from(JSON.stringify({ user: { id } })).toString('base64url') + '.' + suffix;
+        const tokens = { alpha: token('alpha', 'alpha'), beta: token('beta', 'beta') };
+        const server = Bun.serve({
+            port: 0,
+            fetch(request) {
+                const url = new URL(request.url);
+                if (url.pathname.endsWith('/v1/api/user/info')) {
+                    return Response.json({ data: { userInfo: { realUserID: url.searchParams.get('user_id') } } });
+                }
+                if (url.pathname.endsWith('/minimax-cloud/api/v1/signin/status')) {
+                    return new Response('', { status: 503 });
+                }
+                return new Response('', { status: 404 });
+            },
+        });
+        process.env.MINIMAX_AGENT_URL = 'http://127.0.0.1:' + server.port;
+        process.env.MINIMAX_PLATFORM_URL = 'http://127.0.0.1:' + server.port;
+        process.env.MINIMAX_UUID = '00000000-0000-4000-8000-000000000000';
+        const { cycleNextMinimax, saveMinimax } = await import('./src/minimax/service.ts');
+        try {
+            await Bun.write(process.env.MINIMAX_CONFIG_PATH, JSON.stringify({ tokens: { accessToken: tokens.alpha } }));
+            await saveMinimax('alpha');
+            await Bun.write(process.env.MINIMAX_CONFIG_PATH, JSON.stringify({ tokens: { accessToken: tokens.beta } }));
+            await saveMinimax('beta');
+            await Bun.write(process.env.MINIMAX_CONFIG_PATH, JSON.stringify({ tokens: { accessToken: tokens.alpha } }));
+            let skipped = 0;
+            const result = await cycleNextMinimax({ onSkip: () => { skipped += 1; } });
+            const live = JSON.parse(await Bun.file(process.env.MINIMAX_CONFIG_PATH).text());
+            console.log(JSON.stringify({ healed: result.healed, loadedNext: live.tokens.accessToken === tokens.beta, skipped }));
+        } finally {
+            server.stop(true);
+        }
+    `;
+    try {
+        const proc = Bun.spawn([process.execPath, '--eval', script], {
+            cwd: process.cwd(),
+            env: { ...process.env, DONDO_VAULT: vaultPath, MINIMAX_CONFIG_PATH: configPath },
+            stderr: 'pipe',
+            stdout: 'pipe',
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+            proc.exited,
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+        ]);
+        if (exitCode !== 0) {
+            throw new Error(stderr);
+        }
+        expect(JSON.parse(stdout)).toEqual({ healed: false, loadedNext: true, skipped: 0 });
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});
+
 it('should not attach a stale MiniMax refresh to a replacement account', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dondo-minimax-stale-refresh-test-'));
     const configPath = join(dir, 'minimax-agent-config.json');

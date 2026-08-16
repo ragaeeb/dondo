@@ -83,6 +83,43 @@ const UNIQUE_ID_PATTERN = /UNIQUE[\s\S]{0,220}?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]
 
 let uniqueUserIdPromise: Promise<string> | undefined;
 const checkInPromises = new Map<string, Promise<MiniMaxCheckInResult>>();
+const STALE_IDENTITY = Symbol('minimax-stale-identity');
+const CHECK_IN_FAILURE_KIND = Symbol('minimax-check-in-failure-kind');
+const CHECK_IN_RESPONSE_REJECTION = Symbol('minimax-check-in-response-rejection');
+
+type MiniMaxCheckInFailureKind = 'definitive' | 'transient';
+type MiniMaxCheckInFailure = Error & {
+    [CHECK_IN_FAILURE_KIND]: MiniMaxCheckInFailureKind;
+    [CHECK_IN_RESPONSE_REJECTION]?: true;
+};
+
+const miniMaxCheckInFailure = (
+    message: string,
+    kind: MiniMaxCheckInFailureKind,
+    responseRejected = false,
+): MiniMaxCheckInFailure => {
+    const error = new Error(message) as MiniMaxCheckInFailure;
+    Object.defineProperty(error, CHECK_IN_FAILURE_KIND, { value: kind });
+    if (responseRejected) {
+        Object.defineProperty(error, CHECK_IN_RESPONSE_REJECTION, { value: true });
+    }
+    return error;
+};
+
+const isMiniMaxCheckInFailure = (error: unknown): error is MiniMaxCheckInFailure =>
+    error instanceof Error &&
+    ((error as Partial<MiniMaxCheckInFailure>)[CHECK_IN_FAILURE_KIND] === 'definitive' ||
+        (error as Partial<MiniMaxCheckInFailure>)[CHECK_IN_FAILURE_KIND] === 'transient');
+
+export const isMiniMaxCheckInFailureTolerable = (error: unknown) =>
+    isMiniMaxCheckInFailure(error) && error[CHECK_IN_FAILURE_KIND] === 'transient';
+
+type StaleIdentityLimitResult = LimitResult & { [STALE_IDENTITY]?: true };
+
+const markStaleIdentity = (result: LimitResult): LimitResult => {
+    Object.defineProperty(result, STALE_IDENTITY, { value: true });
+    return result;
+};
 
 const finiteNumber = (value: unknown) => {
     if (typeof value === 'number' && Number.isFinite(value)) {
@@ -307,7 +344,7 @@ const signedAgentExtraInfoRequest = async (accessToken: string, realUserId: stri
 
 const workspaceState = (payload: WorkspacePayload): WorkspaceState | LimitResult => {
     if (payload.base_resp?.status_code && payload.base_resp.status_code !== 0) {
-        return { error: 'MiniMax account state request was rejected', ok: false };
+        return markStaleIdentity({ error: 'MiniMax account state request was rejected', ok: false });
     }
     const workspace = payload.workspaces?.find((item) => item.selected) ?? payload.workspaces?.[0];
     if (!workspace) {
@@ -517,22 +554,22 @@ const checkInPanel = (value: unknown): MiniMaxCheckInPanel | null => {
 const checkInResponsePayload = async (response: Response, label: string) => {
     if (response.status === 401 || response.status === 403) {
         await discardResponse(response);
-        throw new Error('Saved MiniMax access token is expired or rejected');
+        throw miniMaxCheckInFailure('Saved MiniMax access token is expired or rejected', 'definitive');
     }
     if (!response.ok) {
         await discardResponse(response);
-        throw new Error(`MiniMax ${label} request failed with HTTP ${response.status}`);
+        throw miniMaxCheckInFailure(`MiniMax ${label} request failed with HTTP ${response.status}`, 'transient');
     }
     let payload: unknown;
     try {
         payload = await readBoundedResponseJson(response, `MiniMax ${label}`);
     } catch {
-        throw new Error(`MiniMax ${label} response was not valid JSON`);
+        throw miniMaxCheckInFailure(`MiniMax ${label} response was not valid JSON`, 'transient');
     }
     const baseResponse = isRecord(payload) && isRecord(payload.base_resp) ? payload.base_resp : {};
     const statusCode = finiteNumber(baseResponse.status_code);
     if (statusCode !== undefined && statusCode !== 0) {
-        throw new Error(`MiniMax ${label} request was rejected`);
+        throw miniMaxCheckInFailure(`MiniMax ${label} request was rejected`, 'transient', true);
     }
     return payload;
 };
@@ -553,7 +590,7 @@ const checkInStatus = (status: number): MiniMaxCheckInResult['status'] => {
 const resolvedIdentity = async (accessToken: string, onResolved?: MiniMaxIdentityOptions['onRealUserIdResolved']) => {
     const identity = await resolveAgentIdentity(accessToken);
     if (!identity) {
-        throw new Error('Saved MiniMax access token has no readable user identity');
+        throw miniMaxCheckInFailure('Saved MiniMax access token has no readable user identity', 'definitive');
     }
     if (!('response' in identity)) {
         await onResolved?.(identity.realUserId);
@@ -561,9 +598,12 @@ const resolvedIdentity = async (accessToken: string, onResolved?: MiniMaxIdentit
     }
     await discardResponse(identity.response);
     if (identity.response.status === 401 || identity.response.status === 403) {
-        throw new Error('Saved MiniMax access token is expired or rejected');
+        throw miniMaxCheckInFailure('Saved MiniMax access token is expired or rejected', 'definitive');
     }
-    throw new Error(`MiniMax account identity request failed with HTTP ${identity.response.status}`);
+    throw miniMaxCheckInFailure(
+        `MiniMax account identity request failed with HTTP ${identity.response.status}`,
+        'transient',
+    );
 };
 
 export const resolveMiniMaxRealUserId = async (config: MiniMaxConfig) => {
@@ -575,7 +615,7 @@ class MiniMaxCachedIdentityError extends Error {}
 const currentCheckIn = async (accessToken: string, realUserId: string, mayRefreshIdentity = false) => {
     const response = await signedAgentRequest(accessToken, SIGN_IN_STATUS_PATH, 'GET', realUserId);
     if (!response) {
-        throw new Error('MiniMax account state request failed');
+        throw miniMaxCheckInFailure('MiniMax account state request failed', 'transient');
     }
     if (
         mayRefreshIdentity &&
@@ -585,16 +625,28 @@ const currentCheckIn = async (accessToken: string, realUserId: string, mayRefres
         response.status !== 403
     ) {
         await discardResponse(response);
-        throw new MiniMaxCachedIdentityError('Saved MiniMax account identity was rejected');
+        throw new MiniMaxCachedIdentityError('MiniMax account state request was rejected');
     }
-    const payload = await checkInResponsePayload(response, 'check-in status');
+    let payload: unknown;
+    try {
+        payload = await checkInResponsePayload(response, 'check-in status');
+    } catch (error) {
+        if (
+            mayRefreshIdentity &&
+            error instanceof Error &&
+            (error as Partial<MiniMaxCheckInFailure>)[CHECK_IN_RESPONSE_REJECTION] === true
+        ) {
+            throw new MiniMaxCachedIdentityError('MiniMax account state request was rejected');
+        }
+        throw error;
+    }
     const panel = checkInPanel(isRecord(payload) ? payload.data : undefined);
     if (!panel) {
-        throw new Error('MiniMax check-in status returned no valid schedule');
+        throw miniMaxCheckInFailure('MiniMax check-in status returned no valid schedule', 'transient');
     }
     const today = panel.days.find((day) => day.isToday);
     if (!today) {
-        throw new Error('MiniMax check-in status returned no current day');
+        throw miniMaxCheckInFailure('MiniMax check-in status returned no current day', 'transient');
     }
     return { panel, today };
 };
@@ -611,7 +663,7 @@ const unclaimedResult = (today: MiniMaxCheckInDay, panel: MiniMaxCheckInPanel): 
 const claimedResult = async (accessToken: string, realUserId: string): Promise<MiniMaxCheckInResult> => {
     const response = await signedAgentRequest(accessToken, SIGN_IN_CLAIM_PATH, 'POST', realUserId);
     if (!response) {
-        throw new Error('MiniMax check-in request failed');
+        throw miniMaxCheckInFailure('MiniMax check-in request failed', 'transient');
     }
     const payload = await checkInResponsePayload(response, 'check-in claim');
     const data = isRecord(payload) && isRecord(payload.data) ? payload.data : {};
@@ -636,7 +688,7 @@ const claimedResult = async (accessToken: string, realUserId: string): Promise<M
         points < 0 ||
         !panel
     ) {
-        throw new Error('MiniMax check-in response did not include a valid claim result');
+        throw miniMaxCheckInFailure('MiniMax check-in response did not include a valid claim result', 'transient');
     }
     return {
         alreadyClaimed: claimResult === 2,
@@ -683,13 +735,18 @@ export const checkInMiniMax = async (
     const accessToken = config.tokens.accessToken;
     const tokenIdentity = miniMaxTokenIdentity(accessToken);
     if (!tokenIdentity) {
-        throw new Error('Saved MiniMax access token has no readable user identity');
+        throw miniMaxCheckInFailure('Saved MiniMax access token has no readable user identity', 'definitive');
     }
     const existing = checkInPromises.get(tokenIdentity);
     if (existing) {
         return existing;
     }
-    const pending = performMiniMaxCheckIn(accessToken, options);
+    const pending = performMiniMaxCheckIn(accessToken, options).catch((error: unknown) => {
+        if (isMiniMaxCheckInFailure(error)) {
+            throw error;
+        }
+        throw miniMaxCheckInFailure(error instanceof Error ? error.message : 'MiniMax check-in failed', 'transient');
+    });
     checkInPromises.set(tokenIdentity, pending);
     try {
         return await pending;
@@ -705,7 +762,11 @@ const savedTokenRejected = (): LimitResult => ({
     ok: false,
 });
 
-const agentResponseError = async (response: Response, label: string): Promise<LimitResult | null> => {
+const agentResponseError = async (
+    response: Response,
+    label: string,
+    markAccountStateStale = false,
+): Promise<LimitResult | null> => {
     if (response.status === 401 || response.status === 403) {
         await discardResponse(response);
         return savedTokenRejected();
@@ -714,7 +775,10 @@ const agentResponseError = async (response: Response, label: string): Promise<Li
         return null;
     }
     await discardResponse(response);
-    return { error: `MiniMax ${label} request failed with HTTP ${response.status}`, ok: false };
+    const result = { error: `MiniMax ${label} request failed with HTTP ${response.status}`, ok: false as const };
+    return markAccountStateStale && (response.status === 400 || response.status === 404)
+        ? markStaleIdentity(result)
+        : result;
 };
 
 const fetchWorkspaceState = async (accessToken: string, realUserId: string): Promise<WorkspaceState | LimitResult> => {
@@ -727,7 +791,7 @@ const fetchWorkspaceState = async (accessToken: string, realUserId: string): Pro
     if (!response) {
         return { error: 'MiniMax account state request failed', ok: false };
     }
-    const responseError = await agentResponseError(response, 'account state');
+    const responseError = await agentResponseError(response, 'account state', true);
     if (responseError) {
         return responseError;
     }
@@ -861,12 +925,7 @@ const resolvedLimitIdentity = async (
 };
 
 const limitResultMayHaveStaleIdentity = (result: LimitResult) => {
-    return (
-        !result.ok &&
-        (result.error === 'MiniMax account state request failed with HTTP 400' ||
-            result.error === 'MiniMax account state request failed with HTTP 404' ||
-            result.error === 'MiniMax account state request was rejected')
-    );
+    return !result.ok && (result as StaleIdentityLimitResult)[STALE_IDENTITY] === true;
 };
 
 export const fetchMiniMaxLimits = async (

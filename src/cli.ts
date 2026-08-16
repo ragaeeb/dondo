@@ -1,7 +1,5 @@
-import { VAULT_PATH } from './config.ts';
 import type { CycleNextResult, CycleSkipReporter } from './cycle.ts';
 import { errorMessage, isPublicError } from './errors.ts';
-import { withMutationLock } from './mutation-lock.ts';
 
 type CycleOperation = (onSkip: CycleSkipReporter) => Promise<CycleNextResult>;
 
@@ -15,14 +13,8 @@ export type CycleCliDependencies = {
 type CyclePlatform = 'kiro' | 'minimax';
 
 const defaultDependencies: CycleCliDependencies = {
-    cycleKiro: async (onSkip) =>
-        withMutationLock(`${VAULT_PATH}.kiro-cycle.lock`, async () =>
-            (await import('./kiro/service.ts')).cycleNextKiro({ onSkip }),
-        ),
-    cycleMinimax: async (onSkip) =>
-        withMutationLock(`${VAULT_PATH}.minimax-cycle.lock`, async () =>
-            (await import('./minimax/service.ts')).cycleNextMinimax({ onSkip }),
-        ),
+    cycleKiro: async (onSkip) => (await import('./kiro/service.ts')).cycleNextKiro({ onSkip }),
+    cycleMinimax: async (onSkip) => (await import('./minimax/service.ts')).cycleNextMinimax({ onSkip }),
     writeStderr: (text) => process.stderr.write(text),
     writeStdout: (text) => process.stdout.write(text),
 };

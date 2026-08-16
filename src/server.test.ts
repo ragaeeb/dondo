@@ -1,5 +1,6 @@
 import { expect, it } from 'bun:test';
 import { createServer } from 'node:net';
+import { DEV_MODE, KEYCHAIN_PROVIDER } from './config.ts';
 import { publicError } from './errors.ts';
 import {
     API_RATE_LIMIT_MAX,
@@ -98,11 +99,13 @@ it('should expose only home-contracted safe startup diagnostics', () => {
 
     expect(diagnostics.url).toBe('http://127.0.0.1:4321');
     expect(diagnostics.platform).toBe(process.platform);
-    expect(diagnostics.mode).toBe('standard');
-    expect(diagnostics.keychain).toBe('macos-keychain');
+    expect(diagnostics.mode).toBe(DEV_MODE);
+    expect(diagnostics.keychain).toBe(KEYCHAIN_PROVIDER);
     expect(diagnostics.dataDir).toMatch(/^~\//u);
     expect(diagnostics.vault).toMatch(/^~\//u);
-    expect(serialized).not.toContain(process.env.HOME ?? '');
+    if (process.env.HOME) {
+        expect(serialized).not.toContain(process.env.HOME);
+    }
     expect(serialized).not.toContain('access_token');
     expect(serialized).not.toContain('refresh_token');
 });

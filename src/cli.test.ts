@@ -65,6 +65,7 @@ it('rejects flags and commands outside the stable contract without invoking a pl
         ['minimax', '--next'],
         ['kiro', 'next', '--verbose'],
         ['minimax', 'list'],
+        ['minimax', 'next', '--json', 'unexpected'],
     ]) {
         const result = await run(args, { cycleKiro: dependency, cycleMinimax: dependency });
         expect(result.exitCode).toBe(2);

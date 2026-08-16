@@ -9,12 +9,14 @@ import { createAsyncQueue } from '../async-queue.ts';
 import { MINIMAX_CONFIG_PATH, VAULT_PATH } from '../config.ts';
 import { type CycleNextResult, type CycleSkipReporter, cycleCandidateKeys } from '../cycle.ts';
 import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
+import { withPlatformMutationLock } from '../mutation-lock.ts';
 import { readBoundedLocalText, writePrivateFile } from '../storage/file.ts';
 import { readVaultSection, updateVaultSection } from '../storage/vault.ts';
 import type { LimitResult, MinimaxSnapshot, MinimaxVault } from '../types.ts';
 import {
     checkInMiniMax,
     fetchMiniMaxLimits,
+    isMiniMaxCheckInFailureTolerable,
     type MiniMaxCheckInResult,
     type MiniMaxConfig,
     miniMaxTokenIdentity,
@@ -169,23 +171,31 @@ export const saveMinimax = async (key: string) => {
     });
 };
 
-export const loadMinimax = async (key: string) => {
+type MiniMaxCandidate = {
+    config: MiniMaxConfig;
+    key: string;
+    snapshot: MinimaxSnapshot;
+};
+
+const readMinimaxCandidate = async (key: string): Promise<MiniMaxCandidate> => {
     const safeKey = assertAccountKey(key);
     const snapshot = assertReadableAccount(await readVaultSection('minimax'), safeKey);
-    const config = parseConfig(snapshot.config) as MiniMaxConfig;
-    let realUserId: string | undefined;
-    const outcome = checkInOutcome(
-        await checkInMiniMax(config, {
-            onRealUserIdResolved: (resolved) => {
-                realUserId = resolved;
-            },
-            ...(snapshot.realUserId ? { realUserId: snapshot.realUserId } : {}),
-        }),
-    );
+    return { config: parseConfig(snapshot.config) as MiniMaxConfig, key: safeKey, snapshot };
+};
+
+const persistMinimaxCandidate = async ({ config, key, snapshot }: MiniMaxCandidate, realUserId?: string) => {
+    const current = assertReadableAccount(await readVaultSection('minimax'), key);
+    if (current.config !== snapshot.config || current.updatedAt !== snapshot.updatedAt) {
+        throw publicError(409, 'Saved MiniMax account changed while it was being validated. Try loading it again.');
+    }
     await writePrivateFile(MINIMAX_CONFIG_PATH, snapshot.config);
     await updateVaultSection('minimax', (section) => {
-        const current = section.data[safeKey];
-        if (!current || current.config !== snapshot.config || current.updatedAt !== snapshot.updatedAt) {
+        const currentSnapshot = section.data[key];
+        if (
+            !currentSnapshot ||
+            currentSnapshot.config !== snapshot.config ||
+            currentSnapshot.updatedAt !== snapshot.updatedAt
+        ) {
             return { result: undefined, write: false };
         }
         const tokenIdentity = identity(config);
@@ -194,33 +204,70 @@ export const loadMinimax = async (key: string) => {
         const changed = tokenIdentity ? invalidateMiniMaxIdentityLimits(section, tokenIdentity) : false;
         return { result: undefined, write: identityChanged || changed };
     });
+};
+
+const loadMinimaxMutation = async (key: string) => {
+    const candidate = await readMinimaxCandidate(key);
+    let realUserId: string | undefined;
+    const outcome = checkInOutcome(
+        await checkInMiniMax(candidate.config, {
+            onRealUserIdResolved: (resolved) => {
+                realUserId = resolved;
+            },
+            ...(candidate.snapshot.realUserId ? { realUserId: candidate.snapshot.realUserId } : {}),
+        }),
+    );
+    await persistMinimaxCandidate(candidate, realUserId);
     return outcome;
 };
 
-export const cycleNextMinimax = async (options: { onSkip?: CycleSkipReporter } = {}): Promise<CycleNextResult> =>
-    queueMiniMaxCycle(async () => {
-        const section = await readVaultSection('minimax');
-        const activeIdentity = identity(parseConfig(await liveConfig().catch(() => '')));
-        const activeKey = Object.entries(section.data)
-            .filter(([, snapshot]) => activeIdentity && identity(parseConfig(snapshot.config)) === activeIdentity)
-            .map(([key]) => key)
-            .sort((left, right) => left.localeCompare(right, 'en'))[0];
-        const keys = cycleCandidateKeys(
-            [...Object.keys(section.data), ...Object.keys(section.corruptions ?? {})],
-            activeKey,
-        );
-        let healed = false;
-        for (const key of keys) {
-            try {
-                await loadMinimax(key);
-                return { healed };
-            } catch {
-                healed = true;
-                options.onSkip?.();
-            }
+export const loadMinimax = async (key: string) =>
+    queueMiniMaxCycle(() => withPlatformMutationLock('minimax', () => loadMinimaxMutation(key)));
+
+const cycleMinimaxCandidate = async (key: string) => {
+    const candidate = await readMinimaxCandidate(key);
+    let realUserId: string | undefined;
+    try {
+        await checkInMiniMax(candidate.config, {
+            onRealUserIdResolved: (resolved) => {
+                realUserId = resolved;
+            },
+            ...(candidate.snapshot.realUserId ? { realUserId: candidate.snapshot.realUserId } : {}),
+        });
+    } catch (error) {
+        if (!isMiniMaxCheckInFailureTolerable(error)) {
+            throw error;
         }
-        throw publicError(409, 'No saved MiniMax account could be loaded');
-    });
+    }
+    await persistMinimaxCandidate(candidate, realUserId);
+};
+
+export const cycleNextMinimax = async (options: { onSkip?: CycleSkipReporter } = {}): Promise<CycleNextResult> =>
+    queueMiniMaxCycle(() =>
+        withPlatformMutationLock('minimax', async () => {
+            const section = await readVaultSection('minimax');
+            const activeIdentity = identity(parseConfig(await liveConfig().catch(() => '')));
+            const activeKey = Object.entries(section.data)
+                .filter(([, snapshot]) => activeIdentity && identity(parseConfig(snapshot.config)) === activeIdentity)
+                .map(([key]) => key)
+                .sort((left, right) => left.localeCompare(right, 'en'))[0];
+            const keys = cycleCandidateKeys(
+                [...Object.keys(section.data), ...Object.keys(section.corruptions ?? {})],
+                activeKey,
+            );
+            let healed = false;
+            for (const key of keys) {
+                try {
+                    await cycleMinimaxCandidate(key);
+                    return { healed };
+                } catch {
+                    healed = true;
+                    options.onSkip?.();
+                }
+            }
+            throw publicError(409, 'No saved MiniMax account could be loaded');
+        }),
+    );
 
 export const deleteMinimax = async (key: string) => {
     const safeKey = assertAccountKey(key);

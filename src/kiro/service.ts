@@ -20,6 +20,7 @@ import {
 import { type CycleNextResult, type CycleSkipReporter, cycleCandidateKeys } from '../cycle.ts';
 import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { discardResponse, readBoundedResponseJson } from '../http.ts';
+import { withPlatformMutationLock } from '../mutation-lock.ts';
 import { isProcessRunning } from '../process.ts';
 import { readBoundedLocalText, writePrivateFile } from '../storage/file.ts';
 import { readVaultSection, updateVaultSection } from '../storage/vault.ts';
@@ -43,6 +44,7 @@ type KiroSessionFiles = {
 
 let activeKiroKey: string | undefined;
 const queueKiroMutation = createAsyncQueue();
+const KIRO_PROCESS_RUNNING = Symbol('kiro-process-running');
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -50,12 +52,18 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
 
 const assertKiroClosed = async () => {
     if (await isProcessRunning(KIRO_PROCESS_NAME)) {
-        throw publicError(
-            409,
-            'Quit Kiro completely before clearing or loading an account. Kiro must be closed while Dondo replaces its local login files.',
+        throw Object.assign(
+            publicError(
+                409,
+                'Quit Kiro completely before clearing or loading an account. Kiro must be closed while Dondo replaces its local login files.',
+            ),
+            { [KIRO_PROCESS_RUNNING]: true as const },
         );
     }
 };
+
+const isKiroProcessRunningError = (error: unknown) =>
+    error instanceof Error && (error as { [KIRO_PROCESS_RUNNING]?: boolean })[KIRO_PROCESS_RUNNING] === true;
 
 const liveAuth = async () => {
     return (await readBoundedLocalText(KIRO_AUTH_PATH)) ?? '';
@@ -370,7 +378,8 @@ const saveKiroMutation = async (key: string) => {
     activeKiroKey = safeKey;
 };
 
-export const saveKiro = async (key: string) => queueKiroMutation(() => saveKiroMutation(key));
+export const saveKiro = async (key: string) =>
+    queueKiroMutation(() => withPlatformMutationLock('kiro', () => saveKiroMutation(key)));
 
 const loadKiroMutation = async (key: string) => {
     const safeKey = assertAccountKey(key);
@@ -402,31 +411,37 @@ const loadKiroMutation = async (key: string) => {
     activeKiroKey = safeKey;
 };
 
-export const loadKiro = async (key: string) => queueKiroMutation(() => loadKiroMutation(key));
+export const loadKiro = async (key: string) =>
+    queueKiroMutation(() => withPlatformMutationLock('kiro', () => loadKiroMutation(key)));
 
 export const cycleNextKiro = async (options: { onSkip?: CycleSkipReporter } = {}): Promise<CycleNextResult> =>
-    queueKiroMutation(async () => {
-        await assertKiroClosed();
-        const originalAuthText = await liveAuth().catch(() => '');
-        await syncMatchingLiveKiro(originalAuthText);
-        const section = await readVaultSection('kiro');
-        const activeKey = matchingKiroEntry(section, parseKiroAuth(originalAuthText))?.[0];
-        const keys = cycleCandidateKeys(
-            [...Object.keys(section.data), ...Object.keys(section.corruptions ?? {})],
-            activeKey,
-        );
-        let healed = false;
-        for (const key of keys) {
-            try {
-                await loadKiroMutation(key);
-                return { healed };
-            } catch {
-                healed = true;
-                options.onSkip?.();
+    queueKiroMutation(() =>
+        withPlatformMutationLock('kiro', async () => {
+            await assertKiroClosed();
+            const originalAuthText = await liveAuth().catch(() => '');
+            await syncMatchingLiveKiro(originalAuthText);
+            const section = await readVaultSection('kiro');
+            const activeKey = matchingKiroEntry(section, parseKiroAuth(originalAuthText))?.[0];
+            const keys = cycleCandidateKeys(
+                [...Object.keys(section.data), ...Object.keys(section.corruptions ?? {})],
+                activeKey,
+            );
+            let healed = false;
+            for (const key of keys) {
+                try {
+                    await loadKiroMutation(key);
+                    return { healed };
+                } catch (error) {
+                    if (isKiroProcessRunningError(error)) {
+                        throw error;
+                    }
+                    healed = true;
+                    options.onSkip?.();
+                }
             }
-        }
-        throw publicError(409, 'No saved Kiro account could be loaded');
-    });
+            throw publicError(409, 'No saved Kiro account could be loaded');
+        }),
+    );
 
 const clearKiroMutation = async () => {
     await assertKiroClosed();
@@ -435,7 +450,7 @@ const clearKiroMutation = async () => {
     activeKiroKey = undefined;
 };
 
-export const clearKiro = async () => queueKiroMutation(clearKiroMutation);
+export const clearKiro = async () => queueKiroMutation(() => withPlatformMutationLock('kiro', clearKiroMutation));
 
 const deleteKiroMutation = async (key: string) => {
     const safeKey = assertAccountKey(key);

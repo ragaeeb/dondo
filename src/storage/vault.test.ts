@@ -118,6 +118,40 @@ it('should encrypt a cached MiniMax real user ID while preserving snapshots with
     }
 });
 
+it('should read legacy MiniMax ciphertext without a cached real user ID', async () => {
+    const { dir, path } = await tempVault();
+    try {
+        await updateVaultSection(
+            'minimax',
+            (section) => {
+                section.data.legacy = {
+                    config: '{"tokens":{"accessToken":"legacy-token"}}',
+                    createdAt: '2026-01-01T00:00:00.000Z',
+                    updatedAt: '2026-01-02T00:00:00.000Z',
+                };
+                return { result: undefined };
+            },
+            path,
+            TEST_KEY,
+        );
+
+        const stored = (await Bun.file(path).json()) as {
+            minimax: { data: Record<string, Record<string, string>> };
+        };
+        expect(Object.keys(stored.minimax.data.legacy ?? {})).toEqual(['config', 'createdAt', 'updatedAt']);
+
+        const section = await readVaultSection('minimax', path, TEST_KEY);
+        expect(section.data.legacy).toEqual({
+            config: '{"tokens":{"accessToken":"legacy-token"}}',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-02T00:00:00.000Z',
+        });
+        expect(section.corruptions).toBeUndefined();
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});
+
 it('should include the vault path in corrupt JSON errors', async () => {
     const { dir, path } = await tempVault();
     try {
