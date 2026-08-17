@@ -54,9 +54,9 @@ const findKeychainItem = (items: Map<string, MockKeychainItem>, args: string[]) 
 
 const addKeychainItem = (items: Map<string, MockKeychainItem>, args: string[], stdin: string | undefined) => {
     const { account, key, service } = keychainItem(args);
-    const password = stdin?.split(/\r?\n/u)[0] ?? '';
+    const password = argumentValue(args, '-w') ?? stdin?.split(/\r?\n/u)[0] ?? '';
     if (!password) {
-        throw new Error('Mock Keychain writes require secret input on stdin');
+        throw new Error('Mock Keychain writes require a secret');
     }
     items.set(key, {
         account,

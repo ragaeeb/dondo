@@ -12,7 +12,7 @@ import { isProcessRunning } from '../process.ts';
 import { readVaultSection, updateVaultSection } from '../storage/vault.ts';
 import type { AntigravityCredential, LimitResult, PlatformVault, Snapshot } from '../types.ts';
 import { decodeToken, fetchLimits, resolveGoogleIdentity } from './google.ts';
-import { clearLiveAuth, clearLocalState, readCurrentSnapshot, replaceLiveSnapshot } from './keychain.ts';
+import { clearLiveAuth, readCurrentSnapshot, replaceLiveSnapshot } from './keychain.ts';
 
 type AntigravityLimitUpdate = {
     key: string;
@@ -92,7 +92,7 @@ const assertAntigravityClosed = async () => {
     if (await isProcessRunning(ANTIGRAVITY_PROCESS_NAME)) {
         throw publicError(
             409,
-            'Quit Antigravity completely before clearing or loading an account. Antigravity must be closed while Dondo replaces its local login state.',
+            'Quit Antigravity completely before clearing or loading an account. Antigravity must be closed while Dondo replaces its Keychain credential.',
         );
     }
 };
@@ -158,7 +158,6 @@ const loadAntigravityOperation = async (key: string) => {
     const safeKey = assertAccountKey(key);
     await assertAntigravityClosed();
     const snapshot = assertReadableAccount(await readVaultSection('antigravity'), safeKey);
-    await clearLocalState();
     await replaceLiveSnapshot(snapshot);
     liveIdentityCache = { identity: snapshot.identity, passwordVersion: stateVersion(snapshot.password) };
 };

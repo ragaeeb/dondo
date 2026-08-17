@@ -16,7 +16,7 @@ it('should store vault-key material through prompted stdin without putting it in
 
     expect(invocation?.args.at(-1)).toBe('-w');
     expect(invocation?.args).not.toContain(secret);
-    expect(invocation?.stdin).toBe(`${secret}\n`);
+    expect(invocation?.stdin).toBe(`${secret}\n${secret}\n`);
     expect(command).toBe('/usr/bin/security');
 });
 

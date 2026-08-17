@@ -1,6 +1,4 @@
-import { rm } from 'node:fs/promises';
-import { waitForAll } from '../async-queue.ts';
-import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_LOCAL_STATE_PATHS, ANTIGRAVITY_SERVICE, DEV_MODE } from '../config.ts';
+import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_SERVICE, DEV_MODE } from '../config.ts';
 import { publicError } from '../errors.ts';
 import { mockKeychainRun } from '../mock-keychain.ts';
 import { isRunError, run } from '../shell.ts';
@@ -70,11 +68,20 @@ export const readCurrentSnapshot = async (
 };
 
 const writeAndVerifySnapshot = async (snap: AntigravityCredential, runCommand: typeof run) => {
-    await runCommand(
-        SECURITY_PATH,
-        ['add-generic-password', '-s', snap.service, '-a', snap.account, '-l', snap.label, '-D', snap.kind, '-U', '-w'],
-        { stdin: `${snap.password}\n` },
-    );
+    await runCommand(SECURITY_PATH, [
+        'add-generic-password',
+        '-s',
+        snap.service,
+        '-a',
+        snap.account,
+        '-l',
+        snap.label,
+        '-D',
+        snap.kind,
+        '-w',
+        snap.password,
+        '-U',
+    ]);
     const restored = await runCommand(SECURITY_PATH, [
         'find-generic-password',
         '-s',
@@ -109,14 +116,6 @@ export const replaceLiveSnapshot = async (snap: AntigravityCredential, runComman
     }
 };
 
-export const clearLocalState = async () => {
-    await waitForAll(ANTIGRAVITY_LOCAL_STATE_PATHS.map((path) => rm(path, { force: true, recursive: true })));
-};
-
-export const clearLiveAuth = async (
-    runCommand: typeof run = defaultRunCommand,
-    clearState: typeof clearLocalState = clearLocalState,
-) => {
-    await clearState();
+export const clearLiveAuth = async (runCommand: typeof run = defaultRunCommand) => {
     await deleteLivePassword(runCommand);
 };

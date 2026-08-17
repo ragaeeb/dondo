@@ -90,13 +90,21 @@ it('should exercise Antigravity save, load-state, and clear through the sandboxe
         await mkdir(join(home, '.gemini', 'antigravity'), { recursive: true });
         await Bun.write(localStateMarker, 'sandbox-only');
 
+        const load = await fetch(`${serverUrl}/api/antigravity/load`, {
+            body: JSON.stringify({ key: 'mock-account' }),
+            headers: { 'Content-Type': 'application/json' },
+            method: 'POST',
+        });
+        expect(load.status).toBe(200);
+        expect(await Bun.file(localStateMarker).text()).toBe('sandbox-only');
+
         const clear = await fetch(`${serverUrl}/api/antigravity/clear`, {
             body: '{}',
             headers: { 'Content-Type': 'application/json' },
             method: 'POST',
         });
         expect(clear.status).toBe(200);
-        expect(await Bun.file(localStateMarker).exists()).toBe(false);
+        expect(await Bun.file(localStateMarker).text()).toBe('sandbox-only');
 
         const afterClear = await fetch(`${serverUrl}/api/antigravity/state`);
         expect(afterClear.status).toBe(200);

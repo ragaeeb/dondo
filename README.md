@@ -56,19 +56,15 @@ saved account for one platform as an unencrypted JSON attachment after an explic
 
 ### Antigravity switching
 
-Loading Antigravity replaces its live Keychain credential and removes these local state paths before restoration:
+Loading Antigravity replaces only its live macOS Keychain credential. `Clear live` deletes only that Keychain item.
+Dondo does not delete Antigravity application data: conversation history, projects, agent memory, knowledge, settings,
+backups, and caches remain owned by Antigravity and are preserved across account switches. If Antigravity changes its
+authentication storage contract, Dondo must fail safely instead of deleting application data in an attempt to repair
+the session.
 
-- `~/.antigravity-agent/cloud_accounts.db`
-- `~/.gemini/antigravity`
-- `~/.gemini/antigravity-ide`
-- `~/.gemini/antigravity-backup`
-- `~/Library/Application Support/Antigravity`
-
-`Clear live` deletes the live Keychain item and the same local state. Antigravity must be fully quit before loading or
-clearing; Dondo rejects either operation while its process is running so it cannot restore stale state. Reopen it after
-the operation. These actions change local login state; they do not remotely revoke the account. If a replacement fails,
-Dondo restores the previous Keychain credential when possible, but intentionally does not restore the deleted local
-state caches because they may belong to the account that was just replaced.
+Antigravity must be fully quit before loading or clearing; Dondo rejects either operation while its process is running.
+Reopen it after the operation. These actions change local login state; they do not remotely revoke the account. If a
+replacement fails, Dondo restores the previous Keychain credential when possible.
 
 ### Kiro switching
 
@@ -211,10 +207,12 @@ State, limit, mutation, and error responses are non-cacheable and never contain 
 token-bearing API response. It is a local-only, non-cacheable attachment and should be protected like the original auth
 files.
 
-When Dondo writes a vault secret or Antigravity credential through the macOS `security` CLI, it sends the secret over
-the child process's standard input instead of placing it in the process argument list. Command failures redact both
-private input and recognizable token fields. macOS may still show a Keychain access prompt, and another process running
-as the logged-in user remains within the local trust boundary.
+When Dondo writes the vault key through the macOS `security` CLI, it sends the secret over the child process's standard
+input. Antigravity replacement preserves the historical `security -w <credential>` invocation so loading does not
+enter the CLI's interactive confirmation flow; the credential can therefore be briefly visible in the child process
+arguments to another process running as the logged-in user. Command failures redact private input and recognizable
+token fields. macOS may still show a Keychain access prompt, and another process running as the logged-in user remains
+within the local trust boundary.
 
 ## Development
 

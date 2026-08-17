@@ -16,23 +16,20 @@ it('should keep mock Keychain credentials in process memory', async () => {
 
 it('should emulate Antigravity Keychain metadata without invoking security', async () => {
     const run = createMockKeychainRunner();
-    await run(
-        '/usr/bin/security',
-        [
-            'add-generic-password',
-            '-s',
-            'gemini',
-            '-a',
-            'antigravity',
-            '-l',
-            'gemini',
-            '-D',
-            'Generic Password',
-            '-U',
-            '-w',
-        ],
-        { stdin: 'mock-password\n' },
-    );
+    await run('/usr/bin/security', [
+        'add-generic-password',
+        '-s',
+        'gemini',
+        '-a',
+        'antigravity',
+        '-l',
+        'gemini',
+        '-D',
+        'Generic Password',
+        '-w',
+        'mock-password',
+        '-U',
+    ]);
 
     const snapshot = await run('/usr/bin/security', [
         'find-generic-password',

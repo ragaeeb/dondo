@@ -31,7 +31,7 @@ const readVaultSecret = async (runCommand: typeof run) => {
 
 export const storeVaultSecret = async (secret: string, runCommand: typeof run = defaultRunCommand) => {
     await runCommand(SECURITY_PATH, ['add-generic-password', '-s', VAULT_KEY_SERVICE, '-a', VAULT_KEY_ACCOUNT, '-w'], {
-        stdin: `${secret}\n`,
+        stdin: `${secret}\n${secret}\n`,
     });
 };
 

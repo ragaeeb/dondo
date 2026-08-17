@@ -75,13 +75,6 @@ export const VAULT_KEY_ACCOUNT = 'vault-key';
 
 export const ANTIGRAVITY_SERVICE = env('ANTIGRAVITY_SERVICE') ?? 'gemini';
 export const ANTIGRAVITY_ACCOUNT = env('ANTIGRAVITY_ACCOUNT') ?? 'antigravity';
-export const ANTIGRAVITY_LOCAL_STATE_PATHS = [
-    join(HOME_DIR, '.antigravity-agent', 'cloud_accounts.db'),
-    join(HOME_DIR, '.gemini', 'antigravity'),
-    join(HOME_DIR, '.gemini', 'antigravity-ide'),
-    join(HOME_DIR, '.gemini', 'antigravity-backup'),
-    join(HOME_DIR, 'Library', 'Application Support', 'Antigravity'),
-];
 
 export const ANTIGRAVITY_VERSION = env('ANTIGRAVITY_VERSION') ?? '2.0.3';
 export const ANTIGRAVITY_PROCESS_NAME = env('ANTIGRAVITY_PROCESS_NAME') ?? 'Antigravity';
