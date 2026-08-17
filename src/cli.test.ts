@@ -50,7 +50,7 @@ it('supports machine-readable output without account metadata', async () => {
 
     expect(JSON.parse(result.stdout)).toEqual({ action: 'next', healed: true, ok: true, platform: 'kiro' });
     expect(result.stdout).not.toMatch(/label|accountKey|count|index|token/iu);
-    expect(result.stderr).toBe('Skipped an unavailable saved Kiro account.\n');
+    expect(result.stderr).toBe('');
     expect(result.exitCode).toBe(0);
 });
 
@@ -104,5 +104,24 @@ it('preserves safe actionable platform errors such as the Kiro process-closed ru
         exitCode: 1,
         stderr: 'Quit Kiro completely before cycling accounts.\n',
         stdout: '',
+    });
+});
+
+it('keeps machine-readable failures on stderr when JSON output is requested', async () => {
+    const result = await run(['minimax', 'next', '--json'], {
+        cycleMinimax: async (onSkip) => {
+            onSkip();
+            throw publicError(409, 'No saved MiniMax account could be loaded');
+        },
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(JSON.parse(result.stderr)).toEqual({
+        action: 'next',
+        code: 'ACCOUNT_SWITCH_FAILED',
+        error: 'No saved MiniMax account could be loaded',
+        ok: false,
+        platform: 'minimax',
     });
 });

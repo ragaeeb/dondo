@@ -1,12 +1,13 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isPublicError } from '../src/errors.ts';
 import { readVaultSection, updateVaultSection } from '../src/storage/vault.ts';
 
 const BENCHMARK_KEY = Buffer.alloc(32, 23);
 const MAX_VAULT_BYTES = 16 * 1024 * 1024;
 const STORAGE_INVESTIGATION_THRESHOLD_MS = 100;
-const SAMPLE_COUNT = 5;
+export const BENCHMARK_SAMPLE_COUNT = 20;
 const ACCOUNT_COUNTS = [1, 10, 100, 1_000, 4_096];
 const TIMESTAMP = '2026-01-01T00:00:00.000Z';
 
@@ -18,12 +19,13 @@ type BenchmarkMetric = {
 type BenchmarkScenario = {
     accountsPerPlatform: number;
     fileBytes: number;
-    metrics: {
+    metrics?: {
         codexPlatformDecrypt: BenchmarkMetric;
         fullFileReadParse: BenchmarkMetric;
         noWriteUpdate: BenchmarkMetric;
         oneAccountUpdate: BenchmarkMetric;
     };
+    skipped?: string;
 };
 
 const accountKey = (index: number) => `account-${index}`;
@@ -55,7 +57,7 @@ const elapsedMs = async (operation: () => Promise<unknown>) => {
 const measure = async (operation: () => Promise<unknown>): Promise<BenchmarkMetric> => {
     await operation();
     const samples: number[] = [];
-    for (let index = 0; index < SAMPLE_COUNT; index += 1) {
+    for (let index = 0; index < BENCHMARK_SAMPLE_COUNT; index += 1) {
         samples.push(await elapsedMs(operation));
     }
     return benchmarkMetric(samples);
@@ -144,7 +146,13 @@ const seedMinimax = async (count: number, path: string) => {
         (section) => {
             for (let index = 0; index < count; index += 1) {
                 section.data[accountKey(index)] = {
-                    config: JSON.stringify({ token: `synthetic-minimax-${index}` }),
+                    config: JSON.stringify({
+                        tokens: {
+                            accessToken: `header.${Buffer.from(
+                                JSON.stringify({ user: { id: `synthetic-minimax-${index}` } }),
+                            ).toString('base64url')}.signature`,
+                        },
+                    }),
                     createdAt: TIMESTAMP,
                     realUserId: `synthetic-user-${index}`,
                     updatedAt: TIMESTAMP,
@@ -169,7 +177,18 @@ const measureScenario = async (count: number): Promise<BenchmarkScenario> => {
     const root = await mkdtemp(join(tmpdir(), 'dondo-vault-benchmark-'));
     const path = join(root, 'vault.json');
     try {
-        await seedVault(count, path);
+        try {
+            await seedVault(count, path);
+        } catch (error) {
+            if (!isPublicError(error) || error.message !== 'Vault file exceeds the 16 MiB size limit') {
+                throw error;
+            }
+            return {
+                accountsPerPlatform: count,
+                fileBytes: MAX_VAULT_BYTES + 1,
+                skipped: 'Vault file exceeds the 16 MiB size limit',
+            };
+        }
         const metrics = {
             codexPlatformDecrypt: await measure(() => readVaultSection('codex', path, BENCHMARK_KEY)),
             fullFileReadParse: await measure(async () => {
@@ -207,15 +226,22 @@ const measureScenario = async (count: number): Promise<BenchmarkScenario> => {
 
 const main = async () => {
     const scenarios: BenchmarkScenario[] = [];
+    let skippedAfterLimit = false;
     for (const count of ACCOUNT_COUNTS) {
-        const scenario = await measureScenario(count);
-        if (scenario.fileBytes > MAX_VAULT_BYTES) {
-            break;
+        if (skippedAfterLimit) {
+            scenarios.push({
+                accountsPerPlatform: count,
+                fileBytes: MAX_VAULT_BYTES + 1,
+                skipped: 'Skipped because a smaller benchmark scenario exceeded the 16 MiB vault limit',
+            });
+            continue;
         }
+        const scenario = await measureScenario(count);
         scenarios.push(scenario);
+        skippedAfterLimit = Boolean(scenario.skipped) || scenario.fileBytes > MAX_VAULT_BYTES;
     }
     const investigate = scenarios.some((scenario) =>
-        Object.values(scenario.metrics).some((metric) => shouldInvestigate(metric.p95Ms)),
+        Object.values(scenario.metrics ?? {}).some((metric) => shouldInvestigate(metric.p95Ms)),
     );
     console.log(
         JSON.stringify(

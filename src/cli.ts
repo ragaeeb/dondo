@@ -20,6 +20,7 @@ const defaultDependencies: CycleCliDependencies = {
 };
 
 const USAGE = 'Usage: dondo-donuts <minimax|kiro> next [--json]\n';
+const CLI_CYCLE_ERROR_CODE = 'ACCOUNT_SWITCH_FAILED';
 
 const displayPlatform = (platform: CyclePlatform) => (platform === 'kiro' ? 'Kiro' : 'MiniMax');
 
@@ -43,11 +44,16 @@ export const runCli = async (
 
     const platform = platformValue;
     const label = displayPlatform(platform);
-    const onSkip = () => dependencies.writeStderr(`Skipped an unavailable saved ${label} account.\n`);
+    const machineReadable = option === '--json';
+    const onSkip = () => {
+        if (!machineReadable) {
+            dependencies.writeStderr(`Skipped an unavailable saved ${label} account.\n`);
+        }
+    };
     try {
         const result = await (platform === 'kiro' ? dependencies.cycleKiro(onSkip) : dependencies.cycleMinimax(onSkip));
         dependencies.writeStdout(
-            option === '--json'
+            machineReadable
                 ? `${JSON.stringify({ action: 'next', healed: result.healed, ok: true, platform })}\n`
                 : `Switched to the next available ${label} account.\n`,
         );
@@ -56,7 +62,17 @@ export const runCli = async (
         const message = isPublicError(error)
             ? errorMessage(error)
             : `Could not switch to an available ${label} account.`;
-        dependencies.writeStderr(`${message}\n`);
+        dependencies.writeStderr(
+            machineReadable
+                ? `${JSON.stringify({
+                      action: 'next',
+                      code: CLI_CYCLE_ERROR_CODE,
+                      error: message,
+                      ok: false,
+                      platform,
+                  })}\n`
+                : `${message}\n`,
+        );
         return 1;
     }
 };

@@ -6,7 +6,7 @@ const runError = (error: unknown) => error as { code?: number; stderr?: string; 
 it('should keep mock Keychain credentials in process memory', async () => {
     const run = createMockKeychainRunner();
     await run('/usr/bin/security', ['add-generic-password', '-s', 'dondo', '-a', 'vault-key', '-w'], {
-        stdin: 'private-vault-key\nprivate-vault-key\n',
+        stdin: 'private-vault-key\n',
     });
 
     const stored = await run('/usr/bin/security', ['find-generic-password', '-s', 'dondo', '-a', 'vault-key', '-w']);
@@ -31,7 +31,7 @@ it('should emulate Antigravity Keychain metadata without invoking security', asy
             '-U',
             '-w',
         ],
-        { stdin: 'mock-password\nmock-password\n' },
+        { stdin: 'mock-password\n' },
     );
 
     const snapshot = await run('/usr/bin/security', [
@@ -63,4 +63,25 @@ it('should report missing mock Keychain items with the security not-found code',
     expect(value.code).toBe(44);
     expect(value.stderr).toBe('');
     expect(value.stdout).toBe('');
+});
+
+it('should escape control characters in mock Keychain diagnostics', async () => {
+    const run = createMockKeychainRunner();
+    await run(
+        '/usr/bin/security',
+        ['add-generic-password', '-s', 'gemini', '-a', 'antigravity', '-l', 'line\nlabel', '-w'],
+        { stdin: 'password\\with\nnewline\n' },
+    );
+
+    const snapshot = await run('/usr/bin/security', [
+        'find-generic-password',
+        '-s',
+        'gemini',
+        '-a',
+        'antigravity',
+        '-g',
+    ]);
+
+    expect(snapshot.stderr).toContain('line\\nlabel');
+    expect(snapshot.stderr).toContain('password: "password\\\\with"');
 });

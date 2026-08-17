@@ -58,15 +58,32 @@ it('recovers an old lock with invalid contents', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dondo-mutation-lock-'));
     const path = join(dir, 'cycle.lock');
     try {
-        await Bun.write(path, 'not-a-pid\n');
         const old = new Date(0);
-        await utimes(path, old, old);
-        expect((await stat(path)).mtimeMs).toBe(0);
-        await expect(withMutationLock(path, async () => 'recovered')).resolves.toBe('recovered');
+        for (const contents of ['', 'not-a-pid\n']) {
+            await Bun.write(path, contents);
+            await utimes(path, old, old);
+            expect((await stat(path)).mtimeMs).toBe(0);
+            await expect(withMutationLock(path, async () => 'recovered')).resolves.toBe('recovered');
+        }
     } finally {
         await rm(dir, { force: true, recursive: true });
     }
 });
+
+it('does not steal an old lock from a live PID', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-mutation-lock-'));
+    const path = join(dir, 'cycle.lock');
+    try {
+        await Bun.write(path, `${process.pid}\n`);
+        const old = new Date(Date.now() - 2 * 60 * 60 * 1_000);
+        await utimes(path, old, old);
+        await expect(withMutationLock(path, async () => 'unreachable')).rejects.toThrow(
+            'Another Dondo mutation is already in progress',
+        );
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+}, 10_000);
 
 it('closes the handle and removes the lock after acquisition write or sync failure', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dondo-mutation-lock-failure-'));

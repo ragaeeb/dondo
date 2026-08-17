@@ -82,7 +82,8 @@ const MAX_LEVELDB_TOTAL_SCAN_BYTES = 64 * 1024 * 1024;
 const UNIQUE_ID_PATTERN = /UNIQUE[\s\S]{0,220}?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/iu;
 
 let uniqueUserIdPromise: Promise<string> | undefined;
-const checkInPromises = new Map<string, Promise<MiniMaxCheckInResult>>();
+type MiniMaxCheckInPending = Promise<{ realUserId: string; result: MiniMaxCheckInResult }>;
+const checkInPromises = new Map<string, MiniMaxCheckInPending>();
 const STALE_IDENTITY = Symbol('minimax-stale-identity');
 const CHECK_IN_FAILURE_KIND = Symbol('minimax-check-in-failure-kind');
 const CHECK_IN_RESPONSE_REJECTION = Symbol('minimax-check-in-response-rejection');
@@ -113,6 +114,9 @@ const isMiniMaxCheckInFailure = (error: unknown): error is MiniMaxCheckInFailure
 
 export const isMiniMaxCheckInFailureTolerable = (error: unknown) =>
     isMiniMaxCheckInFailure(error) && error[CHECK_IN_FAILURE_KIND] === 'transient';
+
+export const isMiniMaxCheckInFailureDefinitive = (error: unknown) =>
+    isMiniMaxCheckInFailure(error) && error[CHECK_IN_FAILURE_KIND] === 'definitive';
 
 type StaleIdentityLimitResult = LimitResult & { [STALE_IDENTITY]?: true };
 
@@ -711,20 +715,23 @@ const checkInWithIdentity = async (accessToken: string, realUserId: string, mayR
 const performMiniMaxCheckIn = async (
     accessToken: string,
     options: MiniMaxIdentityOptions,
-): Promise<MiniMaxCheckInResult> => {
+): Promise<{ realUserId: string; result: MiniMaxCheckInResult }> => {
     const suppliedRealUserId = options.realUserId?.trim();
     if (!suppliedRealUserId) {
-        const realUserId = await resolvedIdentity(accessToken, options.onRealUserIdResolved);
-        return checkInWithIdentity(accessToken, realUserId);
+        const realUserId = await resolvedIdentity(accessToken);
+        return { realUserId, result: await checkInWithIdentity(accessToken, realUserId) };
     }
     try {
-        return await checkInWithIdentity(accessToken, suppliedRealUserId, true);
+        return {
+            realUserId: suppliedRealUserId,
+            result: await checkInWithIdentity(accessToken, suppliedRealUserId, true),
+        };
     } catch (error) {
         if (!(error instanceof MiniMaxCachedIdentityError)) {
             throw error;
         }
-        const realUserId = await resolvedIdentity(accessToken, options.onRealUserIdResolved);
-        return checkInWithIdentity(accessToken, realUserId);
+        const realUserId = await resolvedIdentity(accessToken);
+        return { realUserId, result: await checkInWithIdentity(accessToken, realUserId) };
     }
 };
 
@@ -739,17 +746,21 @@ export const checkInMiniMax = async (
     }
     const existing = checkInPromises.get(tokenIdentity);
     if (existing) {
-        return existing;
+        const { realUserId, result } = await existing;
+        await options.onRealUserIdResolved?.(realUserId);
+        return result;
     }
     const pending = performMiniMaxCheckIn(accessToken, options).catch((error: unknown) => {
         if (isMiniMaxCheckInFailure(error)) {
             throw error;
         }
         throw miniMaxCheckInFailure(error instanceof Error ? error.message : 'MiniMax check-in failed', 'transient');
-    });
+    }) as MiniMaxCheckInPending;
     checkInPromises.set(tokenIdentity, pending);
     try {
-        return await pending;
+        const { realUserId, result } = await pending;
+        await options.onRealUserIdResolved?.(realUserId);
+        return result;
     } finally {
         if (checkInPromises.get(tokenIdentity) === pending) {
             checkInPromises.delete(tokenIdentity);

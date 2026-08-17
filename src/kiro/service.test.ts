@@ -1094,3 +1094,85 @@ it('should refresh expired active Kiro usage and persist rotated credentials', a
         await rm(dir, { force: true, recursive: true });
     }
 });
+
+it('should not use a stale refresh marker after the saved account is replaced', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-kiro-refresh-race-test-'));
+    const authPath = join(dir, 'kiro-auth-token.json');
+    const vaultPath = join(dir, 'vault.json');
+    const script = `
+        let releaseRequest;
+        const requestStarted = new Promise((resolve) => {
+            releaseRequest = resolve;
+        });
+        let allowResponse;
+        const responseGate = new Promise((resolve) => {
+            allowResponse = resolve;
+        });
+        const server = Bun.serve({
+            fetch: async (request) => {
+                if (request.headers.get('authorization') === 'Bearer account-a-access') {
+                    releaseRequest();
+                    await responseGate;
+                    return new Response('', { status: 401 });
+                }
+                return Response.json({
+                    usageBreakdownList: [{ currentUsage: 1, resourceType: 'CREDIT', usageLimit: 10 }],
+                });
+            },
+            port: 0,
+        });
+        process.env.KIRO_USAGE_URL = 'http://127.0.0.1:' + server.port + '/usage';
+        const { kiroState, saveKiro } = await import('./src/kiro/service.ts');
+        const auth = (account) => JSON.stringify({
+            accessToken: account + '-access',
+            authMethod: 'IdC',
+            profileArn: 'arn:' + account,
+            refreshToken: account + '-refresh',
+        });
+        try {
+            await Bun.write(process.env.KIRO_AUTH_PATH, auth('account-a'));
+            await saveKiro('saved');
+            const statePromise = kiroState({ refreshLimits: true });
+            await requestStarted;
+            await Bun.write(process.env.KIRO_AUTH_PATH, auth('account-b'));
+            await saveKiro('saved');
+            await Bun.write(process.env.KIRO_AUTH_PATH, auth('account-a'));
+            allowResponse();
+            const state = await statePromise;
+            const { readVaultSection } = await import('./src/storage/vault.ts');
+            const stored = JSON.parse((await readVaultSection('kiro')).data.saved.auth);
+            console.log(JSON.stringify({
+                active: state.entries.some((entry) => entry.active),
+                storedIsReplacement: stored.accessToken === 'account-b-access',
+            }));
+        } finally {
+            allowResponse();
+            server.stop(true);
+        }
+    `;
+    try {
+        const proc = Bun.spawn([process.execPath, '--eval', script], {
+            cwd: process.cwd(),
+            env: {
+                ...process.env,
+                DONDO_VAULT: vaultPath,
+                KIRO_AUTH_PATH: authPath,
+                KIRO_PROCESS_NAME: 'dondo-kiro-test-not-running',
+                KIRO_PROFILE_PATH: join(dir, 'profile.json'),
+            },
+            stderr: 'pipe',
+            stdout: 'pipe',
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+            proc.exited,
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+        ]);
+        if (exitCode !== 0) {
+            throw new Error(stderr);
+        }
+        expect(JSON.parse(stdout)).toEqual({ active: false, storedIsReplacement: true });
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+}, 30_000);

@@ -44,7 +44,9 @@ bunx dondo-donuts kiro next
 
 Add `--json` for a stable machine-readable result. Cycling uses deterministic saved-account order, wraps after the
 last account, and skips unavailable sessions until one loads. It never accepts an account label and never lists or
-prints saved labels, account identities, indices, or credentials. Kiro must be fully quit before cycling.
+prints saved labels, account identities, indices, or credentials. JSON failures use the stable
+`{ action, code, error, ok, platform }` shape; skipped-account diagnostics are omitted in JSON mode. Kiro must be fully
+quit before cycling.
 
 ## Using Dondo
 
@@ -64,7 +66,9 @@ Loading Antigravity replaces its live Keychain credential and removes these loca
 
 `Clear live` deletes the live Keychain item and the same local state. Antigravity must be fully quit before loading or
 clearing; Dondo rejects either operation while its process is running so it cannot restore stale state. Reopen it after
-the operation. These actions change local login state; they do not remotely revoke the account.
+the operation. These actions change local login state; they do not remotely revoke the account. If a replacement fails,
+Dondo restores the previous Keychain credential when possible, but intentionally does not restore the deleted local
+state caches because they may belong to the account that was just replaced.
 
 ### Kiro switching
 
@@ -74,7 +78,9 @@ a new label. To switch later, quit Kiro, load the saved account in Dondo, and re
 
 Dondo snapshots Kiro's auth token, optional profile, and matching client registration. Loading validates or refreshes
 the saved session, stages the replacement files, and then commits them with `0600` permissions. Clearing removes those
-local account files without calling Kiro's remote logout endpoint. Kiro intentionally has no `Sync current` row action.
+local account files without calling Kiro's remote logout endpoint. The refreshed saved snapshot is persisted before the
+live-file commit, so a failed live commit leaves the rotated saved credentials available while the live files are rolled
+back independently. Kiro intentionally has no `Sync current` row action.
 
 ## Vault and recovery
 

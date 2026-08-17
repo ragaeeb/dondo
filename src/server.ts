@@ -170,7 +170,7 @@ const createExportByteIterator: ExportByteIteratorFactory = (wallet) => {
                 offset = 0;
             }
             const end = Math.min(offset + EXPORT_STREAM_CHUNK_BYTES, current.byteLength);
-            const chunk = current.slice(offset, end);
+            const chunk = current.subarray(offset, end);
             offset = end;
             return { done: false, value: chunk };
         },
@@ -188,7 +188,14 @@ const defaultDependencies: ServerDependencies = {
 
 const displayPath = (path: string) => {
     const homePrefix = `${HOME_DIR}/`;
-    return path === HOME_DIR ? '~' : path.startsWith(homePrefix) ? `~/${path.slice(homePrefix.length)}` : path;
+    if (path === HOME_DIR) {
+        return '~';
+    }
+    if (path.startsWith(homePrefix)) {
+        const relative = path.slice(homePrefix.length);
+        return relative ? `~/${relative}` : '~';
+    }
+    return path;
 };
 
 export const startupDiagnostics = (port: number) => ({
@@ -679,7 +686,21 @@ export const startServer = async () => {
 if (import.meta.main) {
     const exitCode = await runCli(process.argv.slice(2));
     if (exitCode === null) {
-        await startServer();
+        const server = await startServer();
+        let stopping = false;
+        const stop = async (signalExitCode: number) => {
+            if (stopping) {
+                return;
+            }
+            stopping = true;
+            try {
+                await server.stop(true);
+            } finally {
+                process.exitCode = signalExitCode;
+            }
+        };
+        process.once('SIGINT', () => void stop(130));
+        process.once('SIGTERM', () => void stop(143));
     } else {
         process.exitCode = exitCode;
     }

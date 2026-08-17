@@ -56,27 +56,50 @@ let shuttingDown = false;
 const watchers: FSWatcher[] = [];
 
 const startServer = async () => {
-    activeEnvironment = await prepareDevEnvironment(devMode);
-    child = Bun.spawn([process.execPath, 'src/server.ts'], {
-        env: activeEnvironment.env,
-        stderr: 'inherit',
-        stdin: 'inherit',
-        stdout: 'inherit',
-    });
+    const environment = await prepareDevEnvironment(devMode);
+    activeEnvironment = environment;
+    try {
+        child = Bun.spawn([process.execPath, 'src/server.ts'], {
+            env: environment.env,
+            stderr: 'inherit',
+            stdin: 'inherit',
+            stdout: 'inherit',
+        });
+    } catch (error) {
+        activeEnvironment = undefined;
+        await environment.cleanup().catch(() => undefined);
+        throw error;
+    }
 };
 
 const stopServer = async (server: ReturnType<typeof Bun.spawn>) => {
-    server.kill('SIGTERM');
-    const stopped = await Promise.race([
-        server.exited.then(() => true),
-        Bun.sleep(SHUTDOWN_GRACE_MS).then(() => false),
-    ]);
-    if (!stopped) {
-        server.kill('SIGKILL');
-        await server.exited.catch(() => undefined);
+    const environment = activeEnvironment;
+    let failure: unknown;
+    try {
+        server.kill('SIGTERM');
+        const stopped = await Promise.race([
+            server.exited.then(() => true),
+            Bun.sleep(SHUTDOWN_GRACE_MS).then(() => false),
+        ]);
+        if (!stopped) {
+            server.kill('SIGKILL');
+            await server.exited.catch(() => undefined);
+        }
+    } catch (error) {
+        failure = error;
+    } finally {
+        if (activeEnvironment === environment) {
+            activeEnvironment = undefined;
+        }
+        try {
+            await environment?.cleanup();
+        } catch (error) {
+            failure ??= error;
+        }
     }
-    await activeEnvironment?.cleanup();
-    activeEnvironment = undefined;
+    if (failure) {
+        throw failure;
+    }
 };
 
 const restartServer = async () => {
@@ -106,29 +129,60 @@ const shutdown = async (exitCode: number) => {
     for (const watcher of watchers) {
         watcher.close();
     }
-    await restartQueue;
-    if (child) {
-        await stopServer(child);
+    try {
+        await restartQueue;
+    } catch {
+        // A failed restart must not prevent the current child and sandbox from being cleaned up.
+    } finally {
+        const previous = child;
+        child = undefined;
+        try {
+            if (previous) {
+                await stopServer(previous);
+            } else if (activeEnvironment) {
+                const environment = activeEnvironment;
+                activeEnvironment = undefined;
+                await environment.cleanup();
+            }
+        } finally {
+            process.exit(exitCode);
+        }
     }
-    process.exit(exitCode);
 };
 
 export const startDevWatcher = async () => {
-    await startServer();
-    watchers.push(
-        watch('src', { recursive: true }, (_event, filename) => {
-            if (!filename || isRuntimeSource(String(filename))) {
-                scheduleRestart();
-            }
-        }),
-        watch('.', (_event, filename) => {
-            if (!filename || ROOT_RUNTIME_FILES.has(String(filename))) {
-                scheduleRestart();
-            }
-        }),
-    );
     process.once('SIGINT', () => void shutdown(130));
     process.once('SIGTERM', () => void shutdown(143));
+    try {
+        await startServer();
+        watchers.push(
+            watch('src', { recursive: true }, (_event, filename) => {
+                if (!filename || isRuntimeSource(String(filename))) {
+                    scheduleRestart();
+                }
+            }),
+            watch('.', (_event, filename) => {
+                if (!filename || ROOT_RUNTIME_FILES.has(String(filename))) {
+                    scheduleRestart();
+                }
+            }),
+        );
+    } catch (error) {
+        for (const watcher of watchers) {
+            watcher.close();
+        }
+        watchers.length = 0;
+        const previous = child;
+        child = undefined;
+        if (previous) {
+            await stopServer(previous).catch(() => undefined);
+        } else if (activeEnvironment) {
+            const environment = activeEnvironment;
+            activeEnvironment = undefined;
+            await environment.cleanup().catch(() => undefined);
+        }
+        throw error;
+    }
 };
 
 if (import.meta.main) {

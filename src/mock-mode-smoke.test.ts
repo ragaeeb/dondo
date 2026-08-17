@@ -1,7 +1,23 @@
 import { expect, it } from 'bun:test';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+const getAvailablePort = async () =>
+    new Promise<number>((resolve, reject) => {
+        const server = createServer();
+        server.unref();
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+            const address = server.address();
+            if (!address || typeof address === 'string') {
+                server.close(() => reject(new Error('Could not allocate a mock smoke-test port')));
+                return;
+            }
+            server.close(() => resolve(address.port));
+        });
+    });
 
 const startedServerUrl = async (child: Bun.Subprocess<'ignore', 'pipe', 'pipe'>) => {
     const reader = child.stdout.getReader();
@@ -34,13 +50,15 @@ it('should exercise Antigravity save, load-state, and clear through the sandboxe
     const root = await mkdtemp(join(tmpdir(), 'dondo-mock-smoke-'));
     const home = join(root, 'home');
     const data = join(root, 'data');
+    const port = await getAvailablePort();
     const child = Bun.spawn([process.execPath, 'src/server.ts'], {
         cwd: process.cwd(),
         env: {
             ...process.env,
+            ANTIGRAVITY_PROCESS_NAME: 'dondo-antigravity-mock-test-not-running',
             DONDO_DATA_DIR: data,
             DONDO_DEV_MODE: 'mock',
-            DONDO_PORT: '32123',
+            DONDO_PORT: String(port),
             HOME: home,
         },
         stderr: 'pipe',

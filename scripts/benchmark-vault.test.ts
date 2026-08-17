@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { benchmarkMetric, percentile, shouldInvestigate } from './benchmark-vault.ts';
+import { BENCHMARK_SAMPLE_COUNT, benchmarkMetric, percentile, shouldInvestigate } from './benchmark-vault.ts';
 
 it('should calculate a nearest-rank percentile without mutating samples', () => {
     const samples = [40, 10, 30, 20];
@@ -21,4 +21,8 @@ it('should evaluate investigation thresholds against the unrounded p95', () => {
     expect(metric.p95Ms).toBe(100.004);
     expect(metric.medianMs).toBe(0);
     expect(shouldInvestigate(metric.p95Ms)).toBe(true);
+});
+
+it('should use enough measured samples for a meaningful p95 estimate', () => {
+    expect(BENCHMARK_SAMPLE_COUNT).toBeGreaterThanOrEqual(20);
 });

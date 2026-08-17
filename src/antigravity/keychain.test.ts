@@ -61,7 +61,7 @@ it('should wrap Keychain read failures in fixed public copy', async () => {
     expect(String(error)).not.toContain('private');
 });
 
-it('should replace an absent credential through repeated prompted stdin without a secret argv', async () => {
+it('should replace an absent credential through prompted stdin without a secret argv', async () => {
     const next = snapshot('go-keyring-base64:private-snapshot');
     const invocations: Array<{ args: string[]; stdin: string | undefined }> = [];
     const runCommand = (async (_cmd, args, options) => {
@@ -81,7 +81,7 @@ it('should replace an absent credential through repeated prompted stdin without 
     expect(add?.args.at(-1)).toBe('-w');
     expect(add?.args).not.toContain(next.password);
     expect(add?.args).not.toContain('login.keychain-db');
-    expect(add?.stdin).toBe(`${next.password}\n${next.password}\n`);
+    expect(add?.stdin).toBe(`${next.password}\n`);
 });
 
 it('should restore the previous credential after a failed replacement', async () => {
@@ -110,10 +110,7 @@ it('should restore the previous credential after a failed replacement', async ()
     await expect(replaceLiveSnapshot(next, runCommand)).rejects.toThrow(
         'Dondo could not replace the Antigravity credential in macOS Keychain',
     );
-    expect(additions.map(({ stdin }) => stdin)).toEqual([
-        `${next.password}\n${next.password}\n`,
-        `${previous.password}\n${previous.password}\n`,
-    ]);
+    expect(additions.map(({ stdin }) => stdin)).toEqual([`${next.password}\n`, `${previous.password}\n`]);
     for (const addition of additions) {
         expect(addition.args).not.toContain(next.password);
         expect(addition.args).not.toContain(previous.password);

@@ -29,9 +29,11 @@ import { isKiroSnapshotConfigValid, type KiroAuth, parseKiroAuth, parseKiroJsonO
 import { fetchKiroLimits } from './usage.ts';
 
 type KiroLimitUpdate = {
+    alreadyPersisted?: true;
     auth?: string;
     key: string;
     quota: LimitResult;
+    refreshedAndPersisted?: true;
     sourceLimitVersion: string;
     sourceSnapshotVersion: string;
 };
@@ -45,6 +47,7 @@ type KiroSessionFiles = {
 let activeKiroKey: string | undefined;
 const queueKiroMutation = createAsyncQueue();
 const KIRO_PROCESS_RUNNING = Symbol('kiro-process-running');
+const KIRO_CANDIDATE_UNAVAILABLE = Symbol('kiro-candidate-unavailable');
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -64,6 +67,16 @@ const assertKiroClosed = async () => {
 
 const isKiroProcessRunningError = (error: unknown) =>
     error instanceof Error && (error as { [KIRO_PROCESS_RUNNING]?: boolean })[KIRO_PROCESS_RUNNING] === true;
+
+const unavailableKiroError = (status: number, message: string) => {
+    const error = publicError(status, message);
+    Object.defineProperty(error, KIRO_CANDIDATE_UNAVAILABLE, { value: true });
+    return error;
+};
+
+const isKiroCandidateUnavailableError = (error: unknown) =>
+    error instanceof Error &&
+    (error as { [KIRO_CANDIDATE_UNAVAILABLE]?: boolean })[KIRO_CANDIDATE_UNAVAILABLE] === true;
 
 const liveAuth = async () => {
     return (await readBoundedLocalText(KIRO_AUTH_PATH)) ?? '';
@@ -136,7 +149,7 @@ const refreshSocialAuth = async (auth: KiroAuth, key: string): Promise<KiroAuth>
     if (!response.ok) {
         await discardResponse(response);
         if (response.status === 400 || response.status === 401 || response.status === 403) {
-            throw publicError(
+            throw unavailableKiroError(
                 409,
                 `Saved Kiro session ${key} has been revoked. Sign in again, then replace this snapshot with Save current.`,
             );
@@ -195,14 +208,14 @@ const readValidLiveAuth = async () => {
 
 const assertReadableAccount = (section: KiroVault, key: string) => {
     if (section.corruptions?.[key]) {
-        throw publicError(409, CORRUPTED_ACCOUNT_ERROR);
+        throw unavailableKiroError(409, CORRUPTED_ACCOUNT_ERROR);
     }
     const snapshot = section.data[key];
     if (!snapshot) {
-        throw publicError(404, `No Kiro auth named ${key}`);
+        throw unavailableKiroError(404, `No Kiro auth named ${key}`);
     }
     if (!isKiroSnapshotConfigValid(snapshot)) {
-        throw publicError(409, CORRUPTED_ACCOUNT_ERROR);
+        throw unavailableKiroError(409, CORRUPTED_ACCOUNT_ERROR);
     }
     return snapshot;
 };
@@ -242,12 +255,108 @@ const syncMatchingLiveKiro = async (providedAuthText?: string) => {
     activeKiroKey = key;
 };
 
-const fetchKiroLimitUpdates = async (
-    section: KiroVault,
-    force: boolean,
-    targetKey: string | undefined,
-    activeAuth: KiroAuth | null,
+const isExpiredKiroQuota = (quota: LimitResult) =>
+    !quota.ok && quota.error === 'Saved Kiro access token is expired or rejected';
+
+const currentKiroLimitSource = (
+    current: KiroVault,
+    key: string,
+    snapshot: KiroSnapshot,
+    sourceLimitVersion: string,
 ) => {
+    const saved = current.data[key];
+    return saved &&
+        isKiroSnapshotConfigValid(saved) &&
+        stateVersion(saved) === stateVersion(snapshot) &&
+        stateVersion(current.limits[key] ?? null) === sourceLimitVersion
+        ? saved
+        : undefined;
+};
+
+const persistKiroLimitIfCurrent = async (
+    key: string,
+    sourceSnapshotVersion: string,
+    sourceLimitVersion: string,
+    refreshedAuth: string | undefined,
+    quota: LimitResult,
+) =>
+    updateVaultSection('kiro', (section) => {
+        const currentSnapshot = section.data[key];
+        if (
+            !currentSnapshot ||
+            !isKiroSnapshotConfigValid(currentSnapshot) ||
+            stateVersion(currentSnapshot) !== sourceSnapshotVersion ||
+            stateVersion(section.limits[key] ?? null) !== sourceLimitVersion
+        ) {
+            return { result: { committed: false, section }, write: false };
+        }
+        if (refreshedAuth) {
+            currentSnapshot.auth = refreshedAuth;
+            currentSnapshot.updatedAt = new Date().toISOString();
+        }
+        section.limits[key] = { fetchedAt: new Date().toISOString(), quota };
+        return { result: { committed: true, section } };
+    });
+
+const refreshKiroLimit = async (auth: KiroAuth, key: string) => {
+    try {
+        const refreshed = await refreshSocialAuth(auth, key);
+        return {
+            auth: JSON.stringify(refreshed, null, 2),
+            quota: await fetchKiroLimits(refreshed),
+        };
+    } catch (error) {
+        return { auth: undefined, quota: cleanLimitError(error) };
+    }
+};
+
+const staleKiroLimitUpdate = (current: KiroVault, key: string, expiredQuota: LimitResult): KiroLimitUpdate => ({
+    alreadyPersisted: true,
+    key,
+    quota: current.limits[key]?.quota ?? expiredQuota,
+    sourceLimitVersion: stateVersion(current.limits[key] ?? null),
+    sourceSnapshotVersion: stateVersion(current.data[key] ?? null),
+});
+
+const persistExpiredKiroLimit = async (
+    key: string,
+    snapshot: KiroSnapshot,
+    sourceLimitVersion: string,
+    expiredQuota: LimitResult,
+) =>
+    queueKiroMutation(() =>
+        withPlatformMutationLock('kiro', async (): Promise<KiroLimitUpdate> => {
+            const current = await readVaultSection('kiro');
+            const saved = currentKiroLimitSource(current, key, snapshot, sourceLimitVersion);
+            const sourceSnapshotVersion = stateVersion(snapshot);
+            if (!saved) {
+                return staleKiroLimitUpdate(current, key, expiredQuota);
+            }
+
+            const auth = parseKiroAuth(saved.auth) as KiroAuth;
+            const { auth: refreshedAuth, quota } = await refreshKiroLimit(auth, key);
+
+            const persisted = await persistKiroLimitIfCurrent(
+                key,
+                sourceSnapshotVersion,
+                sourceLimitVersion,
+                refreshedAuth,
+                quota,
+            );
+            const refreshedAndPersisted = persisted.committed && Boolean(refreshedAuth);
+            return {
+                alreadyPersisted: true,
+                ...(refreshedAuth ? { auth: refreshedAuth } : {}),
+                key,
+                quota,
+                ...(refreshedAndPersisted ? { refreshedAndPersisted: true } : {}),
+                sourceLimitVersion: stateVersion(persisted.section.limits[key] ?? null),
+                sourceSnapshotVersion: stateVersion(persisted.section.data[key] ?? null),
+            };
+        }),
+    );
+
+const fetchKiroLimitUpdates = async (section: KiroVault, force: boolean, targetKey: string | undefined) => {
     if (targetKey) {
         assertReadableAccount(section, targetKey);
     }
@@ -257,22 +366,16 @@ const fetchKiroLimitUpdates = async (
     const selected = selectRefreshEntries(readableData, section.limits, targetKey ? { force, targetKey } : { force });
     return boundedMap(selected, async ([key, snapshot]): Promise<KiroLimitUpdate> => {
         const auth = parseKiroAuth(snapshot.auth) as KiroAuth;
-        let refreshedAuth: string | undefined;
         let quota: LimitResult;
         try {
             quota = await fetchKiroLimits(auth);
-            if (!quota.ok && quota.error === 'Saved Kiro access token is expired or rejected') {
-                const refreshed = await refreshSocialAuth(auth, key);
-                if (isSameAuth(activeAuth, auth)) {
-                    refreshedAuth = JSON.stringify(refreshed, null, 2);
-                }
-                quota = await fetchKiroLimits(refreshed);
-            }
         } catch (error) {
             quota = cleanLimitError(error);
         }
+        if (isExpiredKiroQuota(quota)) {
+            return persistExpiredKiroLimit(key, snapshot, stateVersion(section.limits[key] ?? null), quota);
+        }
         return {
-            ...(refreshedAuth ? { auth: refreshedAuth } : {}),
             key,
             quota,
             sourceLimitVersion: stateVersion(section.limits[key] ?? null),
@@ -280,6 +383,36 @@ const fetchKiroLimitUpdates = async (
         };
     });
 };
+
+const applyKiroLimitUpdate = (section: KiroVault, update: KiroLimitUpdate) => {
+    const saved = section.data[update.key];
+    if (
+        !saved ||
+        stateVersion(saved) !== update.sourceSnapshotVersion ||
+        stateVersion(section.limits[update.key] ?? null) !== update.sourceLimitVersion
+    ) {
+        return false;
+    }
+    if (update.auth && update.auth !== saved.auth) {
+        saved.auth = update.auth;
+        saved.updatedAt = new Date().toISOString();
+    }
+    section.limits[update.key] = { fetchedAt: new Date().toISOString(), quota: update.quota };
+    return true;
+};
+
+const persistKiroLimitUpdates = async (updates: KiroLimitUpdate[]) =>
+    queueKiroMutation(() =>
+        withPlatformMutationLock('kiro', () =>
+            updateVaultSection('kiro', (current) => {
+                let changed = false;
+                for (const update of updates) {
+                    changed = applyKiroLimitUpdate(current, update) || changed;
+                }
+                return { result: current, write: changed };
+            }),
+        ),
+    );
 
 const stagedPath = (path: string) => `${path}.${process.pid}.${randomUUID()}.stage`;
 
@@ -432,7 +565,7 @@ export const cycleNextKiro = async (options: { onSkip?: CycleSkipReporter } = {}
                     await loadKiroMutation(key);
                     return { healed };
                 } catch (error) {
-                    if (isKiroProcessRunningError(error)) {
+                    if (isKiroProcessRunningError(error) || !isKiroCandidateUnavailableError(error)) {
                         throw error;
                     }
                     healed = true;
@@ -470,46 +603,44 @@ const deleteKiroMutation = async (key: string) => {
     });
 };
 
-export const deleteKiro = async (key: string) => queueKiroMutation(() => deleteKiroMutation(key));
+export const deleteKiro = async (key: string) =>
+    queueKiroMutation(() => withPlatformMutationLock('kiro', () => deleteKiroMutation(key)));
 
 export const kiroState = async (options: { refreshLimitKey?: string; refreshLimits?: boolean } = {}) => {
-    const liveAuthText = await queueKiroMutation(async () => {
+    const initialState = await queueKiroMutation(async () => {
         const current = await liveAuth().catch(() => '');
-        await syncMatchingLiveKiro(current);
-        return current;
+        await withPlatformMutationLock('kiro', () => syncMatchingLiveKiro(current));
+        return { activeKey: activeKiroKey, liveAuth: current };
     });
-    const activeAuth = parseKiroAuth(liveAuthText);
     const refreshLimitKey = options.refreshLimitKey ? assertAccountKey(options.refreshLimitKey) : undefined;
     const snapshot = await readVaultSection('kiro');
-    const updates = await fetchKiroLimitUpdates(snapshot, options.refreshLimits === true, refreshLimitKey, activeAuth);
-    const section =
-        updates.length === 0
-            ? snapshot
-            : await updateVaultSection('kiro', (current) => {
-                  let changed = false;
-                  for (const update of updates) {
-                      const saved = current.data[update.key];
-                      if (
-                          !saved ||
-                          stateVersion(saved) !== update.sourceSnapshotVersion ||
-                          stateVersion(current.limits[update.key] ?? null) !== update.sourceLimitVersion
-                      ) {
-                          continue;
-                      }
-                      if (update.auth && update.auth !== saved.auth) {
-                          saved.auth = update.auth;
-                          saved.updatedAt = new Date().toISOString();
-                      }
-                      current.limits[update.key] = { fetchedAt: new Date().toISOString(), quota: update.quota };
-                      changed = true;
-                  }
-                  return { result: current, write: changed };
-              });
-    const preferredActive = activeKiroKey ? section.data[activeKiroKey] : undefined;
-    const matchingKey =
-        matchingKiroEntry(section, activeAuth)?.[0] ??
-        (activeKiroKey && preferredActive && isKiroSnapshotConfigValid(preferredActive) ? activeKiroKey : undefined);
-    activeKiroKey = matchingKey;
+    const updates = await fetchKiroLimitUpdates(snapshot, options.refreshLimits === true, refreshLimitKey);
+    const pendingUpdates = updates.filter((update) => !update.alreadyPersisted);
+    if (pendingUpdates.length > 0) {
+        await persistKiroLimitUpdates(pendingUpdates);
+    }
+    const finalized = await queueKiroMutation(() =>
+        withPlatformMutationLock('kiro', async () => {
+            const liveAuthText = await liveAuth().catch(() => '');
+            const activeAuth = parseKiroAuth(liveAuthText);
+            const currentSection = await readVaultSection('kiro');
+            const refreshedInitialUpdate = updates.find(
+                (update) => update.refreshedAndPersisted && update.key === initialState.activeKey,
+            );
+            const fallbackKey =
+                initialState.activeKey &&
+                initialState.liveAuth === liveAuthText &&
+                refreshedInitialUpdate &&
+                refreshedInitialUpdate.sourceSnapshotVersion ===
+                    stateVersion(currentSection.data[initialState.activeKey] ?? null)
+                    ? initialState.activeKey
+                    : undefined;
+            const key = matchingKiroEntry(currentSection, activeAuth)?.[0] ?? fallbackKey;
+            activeKiroKey = key;
+            return { key, section: currentSection };
+        }),
+    );
+    const { key: matchingKey, section } = finalized;
     const healthyEntries = Object.entries(section.data)
         .filter(([, saved]) => isKiroSnapshotConfigValid(saved))
         .map(([key, saved]: [string, KiroSnapshot]) => ({

@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { minimaxCheckInAllMessage, minimaxLoadSuccessMessage } from './client.tsx';
+import { minimaxCheckInAllMessage, minimaxCheckInMessage, minimaxLoadSuccessMessage } from './client.tsx';
 
 it('should describe aggregate MiniMax check-in results without account details', () => {
     expect(
@@ -26,4 +26,16 @@ it('should include the automatic MiniMax check-in outcome in the load message', 
             ok: true,
         }),
     ).toBe('Loaded primary; already checked in today for 400 credits');
+});
+
+it('should describe a claimable MiniMax check-in explicitly', () => {
+    expect(
+        minimaxCheckInMessage({
+            alreadyClaimed: false,
+            claimed: false,
+            dayNo: 4,
+            points: 400,
+            status: 'claimable',
+        }),
+    ).toBe('check-in is ready to claim');
 });

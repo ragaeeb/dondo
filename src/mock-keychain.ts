@@ -26,7 +26,7 @@ const missingItem = () => {
     return Object.assign(new Error('Mock Keychain item was not found'), { code: 44, stderr: '', stdout: '' });
 };
 
-const escapedPassword = (password: string) => password.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+const escapedPassword = (password: string) => JSON.stringify(password).slice(1, -1);
 
 const keychainItem = (args: string[]) => {
     const service = argumentValue(args, '-s');

@@ -624,6 +624,7 @@ it('maps an idempotent MiniMax claim response as already claimed', async () => {
 
 it('deduplicates concurrent MiniMax check-ins for the same token identity', async () => {
     const calls = { claim: 0, identity: 0, status: 0 };
+    const resolved: string[] = [];
     globalThis.fetch = (async (input: string | URL | Request) => {
         const path = new URL(String(input)).pathname;
         if (path.endsWith('/v1/api/user/info')) {
@@ -651,13 +652,35 @@ it('deduplicates concurrent MiniMax check-ins for the same token identity', asyn
     }) as typeof fetch;
 
     const results = await Promise.all([
-        checkInMiniMax({ tokens: { accessToken } }),
-        checkInMiniMax({ tokens: { accessToken } }),
-        checkInMiniMax({ tokens: { accessToken } }),
+        checkInMiniMax(
+            { tokens: { accessToken } },
+            {
+                onRealUserIdResolved: (realUserId) => {
+                    resolved.push(`first:${realUserId}`);
+                },
+            },
+        ),
+        checkInMiniMax(
+            { tokens: { accessToken } },
+            {
+                onRealUserIdResolved: (realUserId) => {
+                    resolved.push(`second:${realUserId}`);
+                },
+            },
+        ),
+        checkInMiniMax(
+            { tokens: { accessToken } },
+            {
+                onRealUserIdResolved: (realUserId) => {
+                    resolved.push(`third:${realUserId}`);
+                },
+            },
+        ),
     ]);
 
     expect(results.every((result) => result.claimed)).toBe(true);
     expect(calls).toEqual({ claim: 1, identity: 1, status: 1 });
+    expect(resolved.sort()).toEqual(['first:real-user', 'second:real-user', 'third:real-user']);
 });
 
 it('cancels a MiniMax LevelDB stream after finding the UUID across chunks', async () => {

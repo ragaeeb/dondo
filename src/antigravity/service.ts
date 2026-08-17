@@ -216,7 +216,7 @@ export const antigravityState = async (options: { refreshLimitKey?: string; refr
                   return { result: current, write: changed };
               });
     const live = await queueAntigravityOperation(() => readCurrentSnapshot().catch(() => null));
-    const activeIdentity = await liveIdentity(live).catch(() => null);
+    const activeIdentity = await queueAntigravityOperation(() => liveIdentity(live).catch(() => null));
     const healthyEntries = Object.entries(section.data).map(([key, saved]: [string, Snapshot]) => {
         const snapshotValid = isReadableSnapshot(saved);
         const cached = section.limits[key];

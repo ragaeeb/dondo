@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import {
     boundedMap,
     CORRUPTED_ACCOUNT_ERROR,
@@ -8,7 +9,7 @@ import {
 import { createAsyncQueue } from '../async-queue.ts';
 import { MINIMAX_CONFIG_PATH, VAULT_PATH } from '../config.ts';
 import { type CycleNextResult, type CycleSkipReporter, cycleCandidateKeys } from '../cycle.ts';
-import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
+import { assertAccountKey, cleanLimitError, isPublicError, publicError } from '../errors.ts';
 import { withPlatformMutationLock } from '../mutation-lock.ts';
 import { readBoundedLocalText, writePrivateFile } from '../storage/file.ts';
 import { readVaultSection, updateVaultSection } from '../storage/vault.ts';
@@ -16,6 +17,7 @@ import type { LimitResult, MinimaxSnapshot, MinimaxVault } from '../types.ts';
 import {
     checkInMiniMax,
     fetchMiniMaxLimits,
+    isMiniMaxCheckInFailureDefinitive,
     isMiniMaxCheckInFailureTolerable,
     type MiniMaxCheckInResult,
     type MiniMaxConfig,
@@ -135,7 +137,7 @@ const fetchMiniMaxLimitUpdates = async (section: MinimaxVault, force: boolean, t
     });
 };
 
-export const saveMinimax = async (key: string) => {
+const saveMinimaxMutation = async (key: string) => {
     const safeKey = assertAccountKey(key);
     const config = await readBoundedLocalText(MINIMAX_CONFIG_PATH);
     if (config === null) {
@@ -171,6 +173,9 @@ export const saveMinimax = async (key: string) => {
     });
 };
 
+export const saveMinimax = async (key: string) =>
+    queueMiniMaxCycle(() => withPlatformMutationLock('minimax', () => saveMinimaxMutation(key)));
+
 type MiniMaxCandidate = {
     config: MiniMaxConfig;
     key: string;
@@ -183,27 +188,140 @@ const readMinimaxCandidate = async (key: string): Promise<MiniMaxCandidate> => {
     return { config: parseConfig(snapshot.config) as MiniMaxConfig, key: safeKey, snapshot };
 };
 
+const changedMinimaxDataKeys = (before: MinimaxVault, after: MinimaxVault, tokenIdentity: string) => {
+    const keys = [...new Set([...Object.keys(before.data), ...Object.keys(after.data)])];
+    return keys.filter((key) => {
+        const beforeSnapshot = before.data[key];
+        const afterSnapshot = after.data[key];
+        return (
+            (identity(parseConfig(beforeSnapshot?.config ?? '')) === tokenIdentity ||
+                identity(parseConfig(afterSnapshot?.config ?? '')) === tokenIdentity) &&
+            stateVersion(beforeSnapshot ?? null) !== stateVersion(afterSnapshot ?? null)
+        );
+    });
+};
+
+const changedMinimaxLimitKeys = (before: MinimaxVault, after: MinimaxVault, tokenIdentity: string) => {
+    const keys = [...new Set([...Object.keys(before.limits), ...Object.keys(after.limits)])];
+    return keys.filter((key) => {
+        const snapshot = after.data[key] ?? before.data[key];
+        return (
+            identity(parseConfig(snapshot?.config ?? '')) === tokenIdentity &&
+            stateVersion(before.limits[key] ?? null) !== stateVersion(after.limits[key] ?? null)
+        );
+    });
+};
+
+const assertMinimaxRollbackTargets = (
+    current: MinimaxVault,
+    after: MinimaxVault,
+    changedDataKeys: string[],
+    changedLimitKeys: string[],
+) => {
+    for (const key of changedDataKeys) {
+        if (stateVersion(current.data[key] ?? null) !== stateVersion(after.data[key] ?? null)) {
+            throw new Error('MiniMax vault changed during rollback');
+        }
+    }
+    for (const key of changedLimitKeys) {
+        if (stateVersion(current.limits[key] ?? null) !== stateVersion(after.limits[key] ?? null)) {
+            throw new Error('MiniMax vault changed during rollback');
+        }
+    }
+};
+
+const restoreMinimaxData = (current: MinimaxVault, before: MinimaxVault, changedDataKeys: string[]) => {
+    for (const key of changedDataKeys) {
+        const snapshot = before.data[key];
+        if (snapshot) {
+            current.data[key] = snapshot;
+        } else {
+            delete current.data[key];
+        }
+    }
+};
+
+const restoreMinimaxLimits = (current: MinimaxVault, before: MinimaxVault, changedLimitKeys: string[]) => {
+    for (const key of changedLimitKeys) {
+        const limit = before.limits[key];
+        if (limit) {
+            current.limits[key] = limit;
+        } else {
+            delete current.limits[key];
+        }
+    }
+};
+
+const restoreMinimaxVaultSection = (
+    current: MinimaxVault,
+    before: MinimaxVault,
+    after: MinimaxVault,
+    changedDataKeys: string[],
+    changedLimitKeys: string[],
+) => {
+    assertMinimaxRollbackTargets(current, after, changedDataKeys, changedLimitKeys);
+    restoreMinimaxData(current, before, changedDataKeys);
+    restoreMinimaxLimits(current, before, changedLimitKeys);
+    return { result: undefined };
+};
+
+const rollbackMinimaxVault = async (before: MinimaxVault, after: MinimaxVault, tokenIdentity: string) => {
+    const changedDataKeys = changedMinimaxDataKeys(before, after, tokenIdentity);
+    const changedLimitKeys = changedMinimaxLimitKeys(before, after, tokenIdentity);
+    if (changedDataKeys.length === 0 && changedLimitKeys.length === 0) {
+        return;
+    }
+
+    await updateVaultSection('minimax', (current) =>
+        restoreMinimaxVaultSection(current, before, after, changedDataKeys, changedLimitKeys),
+    );
+};
+
 const persistMinimaxCandidate = async ({ config, key, snapshot }: MiniMaxCandidate, realUserId?: string) => {
     const current = assertReadableAccount(await readVaultSection('minimax'), key);
     if (current.config !== snapshot.config || current.updatedAt !== snapshot.updatedAt) {
         throw publicError(409, 'Saved MiniMax account changed while it was being validated. Try loading it again.');
     }
-    await writePrivateFile(MINIMAX_CONFIG_PATH, snapshot.config);
-    await updateVaultSection('minimax', (section) => {
+    const before = await readVaultSection('minimax');
+    const tokenIdentity = identity(config);
+    const persisted = await updateVaultSection('minimax', (section) => {
         const currentSnapshot = section.data[key];
         if (
             !currentSnapshot ||
             currentSnapshot.config !== snapshot.config ||
             currentSnapshot.updatedAt !== snapshot.updatedAt
         ) {
-            return { result: undefined, write: false };
+            throw publicError(409, 'Saved MiniMax account changed while it was being validated. Try loading it again.');
         }
-        const tokenIdentity = identity(config);
         const identityChanged =
             tokenIdentity && realUserId ? updateMiniMaxIdentityRealUserId(section, tokenIdentity, realUserId) : false;
-        const changed = tokenIdentity ? invalidateMiniMaxIdentityLimits(section, tokenIdentity) : false;
-        return { result: undefined, write: identityChanged || changed };
+        const limitsChanged = tokenIdentity ? invalidateMiniMaxIdentityLimits(section, tokenIdentity) : false;
+        return { result: section, write: identityChanged || limitsChanged };
     });
+    const previousLiveConfig = await readBoundedLocalText(MINIMAX_CONFIG_PATH);
+    try {
+        await writePrivateFile(MINIMAX_CONFIG_PATH, snapshot.config);
+    } catch (error) {
+        let rollbackFailed = false;
+        try {
+            if (previousLiveConfig === null) {
+                await rm(MINIMAX_CONFIG_PATH, { force: true });
+            } else {
+                await writePrivateFile(MINIMAX_CONFIG_PATH, previousLiveConfig);
+            }
+        } catch {
+            rollbackFailed = true;
+        }
+        try {
+            await rollbackMinimaxVault(before, persisted, tokenIdentity);
+        } catch {
+            rollbackFailed = true;
+        }
+        if (rollbackFailed) {
+            throw publicError(500, 'MiniMax account load failed and rollback was incomplete');
+        }
+        throw error;
+    }
 };
 
 const loadMinimaxMutation = async (key: string) => {
@@ -242,6 +360,11 @@ const cycleMinimaxCandidate = async (key: string) => {
     await persistMinimaxCandidate(candidate, realUserId);
 };
 
+const isUnavailableCycleCandidateError = (error: unknown) =>
+    isMiniMaxCheckInFailureDefinitive(error) ||
+    (isPublicError(error) &&
+        (error.status === 404 || (error.status === 409 && error.message === CORRUPTED_ACCOUNT_ERROR)));
+
 export const cycleNextMinimax = async (options: { onSkip?: CycleSkipReporter } = {}): Promise<CycleNextResult> =>
     queueMiniMaxCycle(() =>
         withPlatformMutationLock('minimax', async () => {
@@ -260,7 +383,10 @@ export const cycleNextMinimax = async (options: { onSkip?: CycleSkipReporter } =
                 try {
                     await cycleMinimaxCandidate(key);
                     return { healed };
-                } catch {
+                } catch (error) {
+                    if (!isUnavailableCycleCandidateError(error)) {
+                        throw error;
+                    }
                     healed = true;
                     options.onSkip?.();
                 }
@@ -269,7 +395,7 @@ export const cycleNextMinimax = async (options: { onSkip?: CycleSkipReporter } =
         }),
     );
 
-export const deleteMinimax = async (key: string) => {
+const deleteMinimaxMutation = async (key: string) => {
     const safeKey = assertAccountKey(key);
     await updateVaultSection('minimax', (section) => {
         if (!section.data[safeKey] && !section.corruptions?.[safeKey]) {
@@ -284,7 +410,10 @@ export const deleteMinimax = async (key: string) => {
     });
 };
 
-export const checkInMinimax = async (key?: string) => {
+export const deleteMinimax = async (key: string) =>
+    queueMiniMaxCycle(() => withPlatformMutationLock('minimax', () => deleteMinimaxMutation(key)));
+
+const checkInMinimaxMutation = async (key?: string) => {
     const safeKey = key ? assertAccountKey(key) : undefined;
     const section = await readVaultSection('minimax');
     let configText: string;
@@ -320,7 +449,10 @@ export const checkInMinimax = async (key?: string) => {
     return result;
 };
 
-export const checkInAllMinimax = async (): Promise<MiniMaxCheckInAllResult> => {
+export const checkInMinimax = async (key?: string) =>
+    queueMiniMaxCycle(() => withPlatformMutationLock('minimax', () => checkInMinimaxMutation(key)));
+
+const checkInAllMinimaxMutation = async (): Promise<MiniMaxCheckInAllResult> => {
     const section = await readVaultSection('minimax');
     const uniqueConfigs = new Map<string, { config: MiniMaxConfig; realUserId?: string }>();
     for (const snapshot of Object.values(section.data)) {
@@ -396,32 +528,41 @@ export const checkInAllMinimax = async (): Promise<MiniMaxCheckInAllResult> => {
     );
 };
 
-export const minimaxState = async (options: { refreshLimitKey?: string; refreshLimits?: boolean } = {}) => {
+export const checkInAllMinimax = async (): Promise<MiniMaxCheckInAllResult> =>
+    queueMiniMaxCycle(() => withPlatformMutationLock('minimax', checkInAllMinimaxMutation));
+
+const applyMiniMaxLimitUpdate = (section: MinimaxVault, update: MiniMaxLimitUpdate) => {
+    const saved = section.data[update.key];
+    if (
+        !saved ||
+        stateVersion(saved) !== update.sourceSnapshotVersion ||
+        stateVersion(section.limits[update.key] ?? null) !== update.sourceLimitVersion
+    ) {
+        return false;
+    }
+    section.limits[update.key] = { fetchedAt: new Date().toISOString(), quota: update.quota };
+    if (update.realUserId && saved.realUserId !== update.realUserId) {
+        saved.realUserId = update.realUserId;
+    }
+    return true;
+};
+
+const persistMiniMaxLimitUpdates = async (updates: MiniMaxLimitUpdate[]) =>
+    withPlatformMutationLock('minimax', () =>
+        updateVaultSection('minimax', (current) => {
+            let changed = false;
+            for (const update of updates) {
+                changed = applyMiniMaxLimitUpdate(current, update) || changed;
+            }
+            return { result: current, write: changed };
+        }),
+    );
+
+const minimaxStateMutation = async (options: { refreshLimitKey?: string; refreshLimits?: boolean } = {}) => {
     const refreshLimitKey = options.refreshLimitKey ? assertAccountKey(options.refreshLimitKey) : undefined;
     const snapshot = await readVaultSection('minimax');
     const updates = await fetchMiniMaxLimitUpdates(snapshot, options.refreshLimits === true, refreshLimitKey);
-    const section =
-        updates.length === 0
-            ? snapshot
-            : await updateVaultSection('minimax', (current) => {
-                  let changed = false;
-                  for (const update of updates) {
-                      const saved = current.data[update.key];
-                      if (
-                          !saved ||
-                          stateVersion(saved) !== update.sourceSnapshotVersion ||
-                          stateVersion(current.limits[update.key] ?? null) !== update.sourceLimitVersion
-                      ) {
-                          continue;
-                      }
-                      current.limits[update.key] = { fetchedAt: new Date().toISOString(), quota: update.quota };
-                      if (update.realUserId && saved.realUserId !== update.realUserId) {
-                          saved.realUserId = update.realUserId;
-                      }
-                      changed = true;
-                  }
-                  return { result: current, write: changed };
-              });
+    const section = updates.length === 0 ? snapshot : await persistMiniMaxLimitUpdates(updates);
     const activeConfig = parseConfig(await liveConfig().catch(() => ''));
     const parsedEntries = Object.entries(section.data).map(
         ([key, saved]) => [key, saved, parseConfig(saved.config)] as const,
@@ -455,3 +596,6 @@ export const minimaxState = async (options: { refreshLimitKey?: string; refreshL
         vaultPath: VAULT_PATH,
     };
 };
+
+export const minimaxState = async (options: { refreshLimitKey?: string; refreshLimits?: boolean } = {}) =>
+    minimaxStateMutation(options);

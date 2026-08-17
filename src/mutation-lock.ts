@@ -4,7 +4,8 @@ import { dirname } from 'node:path';
 import { VAULT_PATH } from './config.ts';
 import { publicError } from './errors.ts';
 
-const LOCK_TIMEOUT_MS = 5_000;
+const LOCK_WAIT_TIMEOUT_MS = 5_000;
+const LOCK_ABANDONED_TIMEOUT_MS = 30_000;
 const LOCK_RETRY_MS = 25;
 
 const processIsAlive = (pid: number) => {
@@ -12,38 +13,45 @@ const processIsAlive = (pid: number) => {
         process.kill(pid, 0);
         return true;
     } catch (error) {
-        return (error as { code?: unknown }).code === 'EPERM';
+        return (error as { code?: unknown }).code !== 'ESRCH';
+    }
+};
+
+type LockFileState = {
+    ageMs: number;
+    pid: number | undefined;
+};
+
+const readLockFileState = async (path: string): Promise<LockFileState | undefined> => {
+    try {
+        const [file, value] = await Promise.all([stat(path), readFile(path, 'utf8')]);
+        const owner = value.trim();
+        const pidText = owner.split(':', 1)[0] ?? '';
+        const pid = /^\d+$/u.test(pidText) ? Number(pidText) : undefined;
+        return {
+            ageMs: Math.max(0, Date.now() - file.mtimeMs),
+            pid: Number.isSafeInteger(pid) && (pid ?? 0) > 0 ? pid : undefined,
+        };
+    } catch {
+        return undefined;
     }
 };
 
 const recoverAbandonedLock = async (path: string) => {
-    let value: string;
-    try {
-        value = (await readFile(path, 'utf8')).trim();
-    } catch {
+    const state = await readLockFileState(path);
+    if (!state) {
         return false;
     }
 
-    const pid = Number(value);
-    if (Number.isSafeInteger(pid) && pid > 0) {
-        if (processIsAlive(pid)) {
-            return false;
-        }
-    } else {
-        let ageMs: number;
-        try {
-            ageMs = Date.now() - (await stat(path)).mtimeMs;
-        } catch {
-            return false;
-        }
-        if (ageMs <= LOCK_TIMEOUT_MS) {
-            return false;
-        }
+    const abandoned = state.pid ? !processIsAlive(state.pid) : state.ageMs > LOCK_ABANDONED_TIMEOUT_MS;
+    if (!abandoned) {
+        return false;
     }
-    const abandoned = `${path}.${randomUUID()}.abandoned`;
+
+    const abandonedPath = `${path}.${randomUUID()}.abandoned`;
     try {
-        await rename(path, abandoned);
-        await rm(abandoned, { force: true });
+        await rename(path, abandonedPath);
+        await rm(abandonedPath, { force: true }).catch(() => undefined);
         return true;
     } catch (error) {
         if ((error as { code?: unknown }).code === 'ENOENT') {
@@ -54,14 +62,22 @@ const recoverAbandonedLock = async (path: string) => {
 };
 
 type MutationLockHandle = Awaited<ReturnType<typeof open>>;
+type MutationLockLease = {
+    handle: MutationLockHandle;
+    identity: { dev: number; ino: number };
+    owner: string;
+    path: string;
+};
 
-const tryOpenMutationLock = async (path: string): Promise<MutationLockHandle | undefined> => {
+const tryOpenMutationLock = async (path: string): Promise<MutationLockLease | undefined> => {
     let handle: MutationLockHandle | undefined;
+    const owner = `${process.pid}:${randomUUID()}`;
     try {
         handle = await open(path, 'wx', 0o600);
-        await handle.writeFile(`${process.pid}\n`, 'utf8');
+        await handle.writeFile(`${owner}\n`, 'utf8');
         await handle.sync();
-        return handle;
+        const file = await handle.stat();
+        return { handle, identity: { dev: file.dev, ino: file.ino }, owner, path };
     } catch (error) {
         if (handle) {
             await handle.close().catch(() => {});
@@ -74,18 +90,90 @@ const tryOpenMutationLock = async (path: string): Promise<MutationLockHandle | u
     }
 };
 
-const acquireMutationLock = async (path: string) => {
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
-    for (;;) {
-        const handle = await tryOpenMutationLock(path);
-        if (handle) {
-            return handle;
+const releaseMutationLock = async (lease: MutationLockLease) => {
+    let cleanupError: unknown;
+    try {
+        const current = await stat(lease.path);
+        if (current.dev === lease.identity.dev && current.ino === lease.identity.ino) {
+            const owner = (await readFile(lease.path, 'utf8')).trim();
+            if (owner === lease.owner) {
+                await rm(lease.path, { force: true });
+            }
         }
-        if (await recoverAbandonedLock(path)) {
-            continue;
+    } catch (error) {
+        if ((error as { code?: unknown }).code !== 'ENOENT') {
+            cleanupError = error;
+        }
+    }
+    await lease.handle.close().catch((error) => {
+        cleanupError ??= error;
+    });
+    return cleanupError;
+};
+
+const acquireRecoveryGate = async (path: string) => {
+    const gatePath = `${path}.recovery`;
+    const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
+    for (;;) {
+        const gate = await tryOpenMutationLock(gatePath);
+        if (gate) {
+            return gate;
+        }
+        await recoverAbandonedLock(gatePath);
+        if (Date.now() >= deadline) {
+            throw publicError(409, 'Another Dondo mutation is already in progress');
+        }
+        await Bun.sleep(LOCK_RETRY_MS);
+    }
+};
+
+type MutationLockAttempt = {
+    error?: unknown;
+    failed: boolean;
+    lease?: MutationLockLease;
+};
+
+const attemptMutationLock = async (path: string): Promise<MutationLockAttempt> => {
+    try {
+        const lease = await tryOpenMutationLock(path);
+        if (!lease) {
+            await recoverAbandonedLock(path);
+        }
+        return lease ? { failed: false, lease } : { failed: false };
+    } catch (error) {
+        return { error, failed: true };
+    }
+};
+
+const releaseIfOwned = async (lease: MutationLockLease | undefined) => {
+    if (lease) {
+        await releaseMutationLock(lease);
+    }
+};
+
+const finishMutationLockAttempt = async (
+    attempt: MutationLockAttempt,
+    gateCleanupError: unknown,
+): Promise<MutationLockLease | undefined> => {
+    if (attempt.failed || gateCleanupError) {
+        await releaseIfOwned(attempt.lease);
+        throw attempt.failed ? attempt.error : gateCleanupError;
+    }
+    return attempt.lease;
+};
+
+const acquireMutationLock = async (path: string) => {
+    const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
+    for (;;) {
+        const gate = await acquireRecoveryGate(path);
+        const attempt = await attemptMutationLock(path);
+        const gateCleanupError = await releaseMutationLock(gate);
+        const lease = await finishMutationLockAttempt(attempt, gateCleanupError);
+        if (lease) {
+            return lease;
         }
         if (Date.now() >= deadline) {
-            throw publicError(409, 'Another account switch is already in progress');
+            throw publicError(409, 'Another Dondo mutation is already in progress');
         }
         await Bun.sleep(LOCK_RETRY_MS);
     }
@@ -93,14 +181,26 @@ const acquireMutationLock = async (path: string) => {
 
 export const withMutationLock = async <Result>(path: string, operation: () => Promise<Result>) => {
     await mkdir(dirname(path), { recursive: true });
-    const handle = await acquireMutationLock(path);
+    const lease = await acquireMutationLock(path);
+    let operationFailed = false;
+    let operationResult!: Result;
+    let operationError: unknown;
 
     try {
-        return await operation();
-    } finally {
-        await handle.close();
-        await rm(path, { force: true });
+        operationResult = await operation();
+    } catch (error) {
+        operationFailed = true;
+        operationError = error;
     }
+
+    const cleanupError = await releaseMutationLock(lease);
+    if (operationFailed) {
+        throw operationError;
+    }
+    if (cleanupError) {
+        throw cleanupError;
+    }
+    return operationResult as Result;
 };
 
 export type PlatformMutationLock = 'kiro' | 'minimax';

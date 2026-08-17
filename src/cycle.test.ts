@@ -20,3 +20,7 @@ it('cycles a single account back to itself and handles an empty vault', () => {
     expect(cycleCandidateKeys(['only'], 'only')).toEqual(['only']);
     expect(cycleCandidateKeys([], undefined)).toEqual([]);
 });
+
+it('deduplicates healthy and corrupted account keys before cycling', () => {
+    expect(cycleCandidateKeys(['saved', 'damaged', 'saved', 'damaged'], 'saved')).toEqual(['damaged', 'saved']);
+});

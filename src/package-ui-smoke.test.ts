@@ -163,7 +163,15 @@ describe('packaged UI smoke', () => {
 
             expect(result.exitCode).toBe(1);
             expect(result.stdoutText).toBe('');
-            expect(result.stderrText).toEndWith('No saved MiniMax account could be loaded\n');
+            expect(result.stderrText).toEndWith(
+                `${JSON.stringify({
+                    action: 'next',
+                    code: 'ACCOUNT_SWITCH_FAILED',
+                    error: 'No saved MiniMax account could be loaded',
+                    ok: false,
+                    platform: 'minimax',
+                })}\n`,
+            );
             expect(`${result.stdoutText}${result.stderrText}`).not.toContain('accounts');
             expect(`${result.stdoutText}${result.stderrText}`).not.toContain('token');
         } finally {

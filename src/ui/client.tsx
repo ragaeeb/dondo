@@ -747,6 +747,9 @@ export const minimaxCheckInMessage = (result: MinimaxCheckInResult) => {
     if (result.status === 'disabled') {
         return 'check-in is disabled today';
     }
+    if (result.status === 'claimable') {
+        return 'check-in is ready to claim';
+    }
     return 'check-in is not available yet';
 };
 

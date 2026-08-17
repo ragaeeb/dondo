@@ -73,7 +73,7 @@ const writeAndVerifySnapshot = async (snap: AntigravityCredential, runCommand: t
     await runCommand(
         SECURITY_PATH,
         ['add-generic-password', '-s', snap.service, '-a', snap.account, '-l', snap.label, '-D', snap.kind, '-U', '-w'],
-        { stdin: `${snap.password}\n${snap.password}\n` },
+        { stdin: `${snap.password}\n` },
     );
     const restored = await runCommand(SECURITY_PATH, [
         'find-generic-password',
