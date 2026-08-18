@@ -41,7 +41,6 @@ it('should preserve Antigravity account creation time when replacing a healthy r
         }));
         mock.module('./src/antigravity/keychain.ts', () => ({
             clearLiveAuth: async () => {},
-            clearLocalState: async () => {},
             readCurrentSnapshot: async () => snapshot,
             replaceLiveSnapshot: async () => {},
         }));
@@ -70,7 +69,6 @@ it('should reject an inert live Antigravity credential before writing the vault'
         }));
         mock.module('./src/antigravity/keychain.ts', () => ({
             clearLiveAuth: async () => {},
-            clearLocalState: async () => {},
             readCurrentSnapshot: async () => snapshot,
             replaceLiveSnapshot: async () => {},
         }));
@@ -84,7 +82,7 @@ it('should reject an inert live Antigravity credential before writing the vault'
     });
 });
 
-it('should clear stale Antigravity state before restoring the replacement credential', async () => {
+it('should replace the Antigravity credential without clearing persistent application state', async () => {
     const script = `
         const { mock } = await import('bun:test');
         const calls = [];
@@ -104,7 +102,6 @@ it('should clear stale Antigravity state before restoring the replacement creden
         }));
         mock.module('./src/antigravity/keychain.ts', () => ({
             clearLiveAuth: async () => {},
-            clearLocalState: async () => { calls.push('clear'); },
             readCurrentSnapshot: async () => snapshot,
             replaceLiveSnapshot: async () => { calls.push('replace'); },
         }));
@@ -112,10 +109,10 @@ it('should clear stale Antigravity state before restoring the replacement creden
         await loadAntigravity('saved');
         console.log(JSON.stringify(calls));
     `;
-    expect(await runAntigravityScript(script)).toEqual(['clear', 'replace']);
+    expect(await runAntigravityScript(script)).toEqual(['replace']);
 });
 
-it('should leave the Antigravity credential untouched when stale-state cleanup fails', async () => {
+it('should not make Antigravity loading depend on a destructive local-state cleanup', async () => {
     const script = `
         const { mock } = await import('bun:test');
         let restored = false;
@@ -135,10 +132,10 @@ it('should leave the Antigravity credential untouched when stale-state cleanup f
             replaceLiveSnapshot: async () => { restored = true; },
         }));
         const { loadAntigravity } = await import('./src/antigravity/service.ts');
-        const error = await loadAntigravity('saved').catch((value) => String(value));
-        console.log(JSON.stringify({ error, restored }));
+        await loadAntigravity('saved');
+        console.log(JSON.stringify({ restored }));
     `;
-    expect(await runAntigravityScript(script)).toEqual({ error: 'Error: cleanup failed', restored: false });
+    expect(await runAntigravityScript(script)).toEqual({ restored: true });
 });
 
 it('should reject tampered Antigravity keychain metadata without clearing or restoring', async () => {
@@ -156,7 +153,6 @@ it('should reject tampered Antigravity keychain metadata without clearing or res
         }));
         mock.module('./src/antigravity/keychain.ts', () => ({
             clearLiveAuth: async () => {},
-            clearLocalState: async () => { calls.push('clear'); },
             readCurrentSnapshot: async () => snapshot,
             replaceLiveSnapshot: async () => { calls.push('replace'); },
         }));
@@ -190,7 +186,6 @@ it('should reject replacing a semantic-invalid saved Antigravity account', async
         }));
         mock.module('./src/antigravity/keychain.ts', () => ({
             clearLiveAuth: async () => {},
-            clearLocalState: async () => {},
             readCurrentSnapshot: async () => valid,
             replaceLiveSnapshot: async () => {},
         }));
@@ -215,7 +210,6 @@ it('should reject Antigravity load and clear while the app is running', async ()
         }));
         mock.module('./src/antigravity/keychain.ts', () => ({
             clearLiveAuth: async () => { calls.push('clear-live'); },
-            clearLocalState: async () => { calls.push('clear-state'); },
             readCurrentSnapshot: async () => { throw new Error('not called'); },
             replaceLiveSnapshot: async () => { calls.push('replace'); },
         }));
@@ -227,9 +221,9 @@ it('should reject Antigravity load and clear while the app is running', async ()
     expect(await runAntigravityScript(script, { ANTIGRAVITY_PROCESS_NAME: '-hostile-name' })).toEqual({
         calls: [],
         clearError:
-            'Error: Quit Antigravity completely before clearing or loading an account. Antigravity must be closed while Dondo replaces its local login state.',
+            'Error: Quit Antigravity completely before clearing or loading an account. Antigravity must be closed while Dondo replaces its Keychain credential.',
         loadError:
-            'Error: Quit Antigravity completely before clearing or loading an account. Antigravity must be closed while Dondo replaces its local login state.',
+            'Error: Quit Antigravity completely before clearing or loading an account. Antigravity must be closed while Dondo replaces its Keychain credential.',
     });
 });
 
@@ -250,23 +244,22 @@ it('should serialize overlapping Antigravity live-state operations', async () =>
         }));
         mock.module('./src/antigravity/keychain.ts', () => ({
             clearLiveAuth: async () => {},
-            clearLocalState: async () => {
+            readCurrentSnapshot: async () => snapshot,
+            replaceLiveSnapshot: async () => {
                 active += 1;
                 maximumActive = Math.max(maximumActive, active);
-                calls.push('clear-start');
+                calls.push('replace-start');
                 await Bun.sleep(25);
-                calls.push('clear-end');
+                calls.push('replace-end');
                 active -= 1;
             },
-            readCurrentSnapshot: async () => snapshot,
-            replaceLiveSnapshot: async () => { calls.push('replace'); },
         }));
         const { loadAntigravity } = await import('./src/antigravity/service.ts');
         await Promise.all([loadAntigravity('first'), loadAntigravity('second')]);
         console.log(JSON.stringify({ calls, maximumActive }));
     `;
     expect(await runAntigravityScript(script)).toEqual({
-        calls: ['clear-start', 'clear-end', 'replace', 'clear-start', 'clear-end', 'replace'],
+        calls: ['replace-start', 'replace-end', 'replace-start', 'replace-end'],
         maximumActive: 1,
     });
 });
@@ -296,7 +289,6 @@ it('should keep the active Antigravity account stable across token rotation', as
         }));
         mock.module('./src/antigravity/keychain.ts', () => ({
             clearLiveAuth: async () => {},
-            clearLocalState: async () => {},
             readCurrentSnapshot: async () => credential('rotated-live-token'),
             replaceLiveSnapshot: async () => {},
         }));

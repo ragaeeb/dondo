@@ -72,6 +72,7 @@ export type ClineVault = VaultSection<ClineSnapshot>;
 export type MinimaxSnapshot = {
     config: string;
     createdAt: string;
+    realUserId?: string;
     updatedAt: string;
 };
 

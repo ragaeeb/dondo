@@ -35,8 +35,21 @@ type MinimaxCheckInResult = {
     status: 'claimed' | 'claimable' | 'disabled' | 'upcoming';
 };
 
+type MinimaxCheckInAllResult = {
+    alreadyClaimed: number;
+    attempted: number;
+    claimed: number;
+    failed: number;
+    unavailable: number;
+};
+
+type LoadResult = {
+    checkIn?: MinimaxCheckInResult;
+    ok: boolean;
+};
+
 type OperationKind =
-    | 'check-in'
+    | 'check-in-all'
     | 'clear'
     | 'delete'
     | 'export'
@@ -64,7 +77,7 @@ type ClearAction = {
 };
 
 type ToolbarAction = {
-    kind: 'check-in';
+    kind: 'check-in-all';
     label: string;
     pendingLabel: string;
     pendingStatus: string;
@@ -78,7 +91,7 @@ type PanelConfig<State extends AccountState> = {
     displayName: string;
     instructions?: ComponentChildren;
     limits?: boolean;
-    loadSuccess?: (key: string) => string;
+    loadSuccess?: (key: string, result: LoadResult) => string;
     platform: PlatformTab;
     syncResource?: 'auth' | 'config';
     toolbarActions?: ToolbarAction[];
@@ -544,9 +557,9 @@ const PlatformAccountPanel = <State extends AccountState>({
 
     const load = (entryKey: string) => {
         void runOperation({ key: entryKey, kind: 'load' }, `Loading ${entryKey}...`, async () => {
-            await api(`/api/${config.platform}/load`, { key: entryKey });
+            const result = await api<LoadResult>(`/api/${config.platform}/load`, { key: entryKey });
             await fetchState('state');
-            return config.loadSuccess?.(entryKey) ?? `Loaded ${entryKey}`;
+            return config.loadSuccess?.(entryKey, result) ?? `Loaded ${entryKey}`;
         });
     };
 
@@ -724,34 +737,48 @@ const KIRO_CONFIG: PanelConfig<AccountState> = {
     platform: 'kiro',
 };
 
-const minimaxCheckIn = async () => {
-    const result = await api<MinimaxCheckInResult>('/api/minimax/check-in', {});
+export const minimaxCheckInMessage = (result: MinimaxCheckInResult) => {
     if (result.claimed) {
-        return `Checked in for ${result.points} credits`;
+        return `checked in for ${result.points} credits`;
     }
     if (result.alreadyClaimed) {
-        return `Already checked in today for ${result.points} credits`;
+        return `already checked in today for ${result.points} credits`;
     }
     if (result.status === 'disabled') {
-        return 'MiniMax check-in is disabled today';
+        return 'check-in is disabled today';
     }
-    return 'MiniMax check-in is not available yet';
+    if (result.status === 'claimable') {
+        return 'check-in is ready to claim';
+    }
+    return 'check-in is not available yet';
+};
+
+export const minimaxCheckInAllMessage = (result: MinimaxCheckInAllResult) =>
+    `Checked in all MiniMax accounts: ${result.claimed} claimed, ${result.alreadyClaimed} already checked in, ${result.unavailable} unavailable, ${result.failed} failed (${result.attempted} attempted)`;
+
+export const minimaxLoadSuccessMessage = (key: string, result: LoadResult) =>
+    result.checkIn ? `Loaded ${key}; ${minimaxCheckInMessage(result.checkIn)}` : `Loaded ${key}`;
+
+const minimaxCheckInAll = async () => {
+    const result = await api<MinimaxCheckInAllResult>('/api/minimax/check-in-all', {});
+    return minimaxCheckInAllMessage(result);
 };
 
 const MINIMAX_CONFIG: PanelConfig<AccountState> = {
     describeState: (state) => `${state.configPath ?? ''} · ${state.vaultPath}`,
     displayName: 'MiniMax',
     limits: true,
+    loadSuccess: minimaxLoadSuccessMessage,
     platform: 'minimax',
     syncResource: 'config',
     toolbarActions: [
         {
-            kind: 'check-in',
-            label: 'Daily Check-In',
-            pendingLabel: 'Checking in…',
-            pendingStatus: 'Checking in...',
+            kind: 'check-in-all',
+            label: 'Check-In for All Accounts',
+            pendingLabel: 'Checking in all…',
+            pendingStatus: 'Checking in all MiniMax accounts...',
             refreshLimitsAfter: true,
-            run: minimaxCheckIn,
+            run: minimaxCheckInAll,
         },
     ],
 };
@@ -814,7 +841,7 @@ const App = () => {
     );
 };
 
-const root = document.getElementById('app');
+const root = typeof document === 'undefined' ? null : document.getElementById('app');
 if (root) {
     render(<App />, root);
 }

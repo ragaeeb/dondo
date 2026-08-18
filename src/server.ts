@@ -8,12 +8,20 @@ import {
     loadAntigravity,
     saveAntigravity,
 } from './antigravity/service.ts';
+import { runCli } from './cli.ts';
 import { clineState, deleteCline, loadCline, saveCline } from './cline/service.ts';
 import { codexState, deleteCodex, loadCodex, saveCodex } from './codex/service.ts';
-import { HOST, PORT } from './config.ts';
+import { APP_VERSION, DATA_DIR, DEV_MODE, HOME_DIR, HOST, KEYCHAIN_PROVIDER, PORT, VAULT_PATH } from './config.ts';
 import { errorMessage, errorStatus, isPublicError, publicError } from './errors.ts';
 import { clearKiro, deleteKiro, kiroState, loadKiro, saveKiro } from './kiro/service.ts';
-import { checkInMinimax, deleteMinimax, loadMinimax, minimaxState, saveMinimax } from './minimax/service.ts';
+import {
+    checkInAllMinimax,
+    checkInMinimax,
+    deleteMinimax,
+    loadMinimax,
+    minimaxState,
+    saveMinimax,
+} from './minimax/service.ts';
 import { type ExportPlatform, type ExportWalletResult, exportPlatformWallet } from './storage/export.ts';
 import { renderHtml } from './ui/html.ts';
 
@@ -71,6 +79,7 @@ const SECURITY_HEADERS = {
 const MAX_PORT = 65_535;
 const MAX_PORT_ATTEMPTS = 20;
 const EXPORT_CONFIRMATION_HEADER = 'X-Dondo-Export';
+export const API_VERSION = 1;
 
 export const API_RATE_LIMIT_MAX = 120;
 export const MAX_EXPORT_PAYLOAD_BYTES = 8 * 1024 * 1024;
@@ -161,7 +170,7 @@ const createExportByteIterator: ExportByteIteratorFactory = (wallet) => {
                 offset = 0;
             }
             const end = Math.min(offset + EXPORT_STREAM_CHUNK_BYTES, current.byteLength);
-            const chunk = current.slice(offset, end);
+            const chunk = current.subarray(offset, end);
             offset = end;
             return { done: false, value: chunk };
         },
@@ -176,6 +185,28 @@ const defaultDependencies: ServerDependencies = {
     exportByteIterator: createExportByteIterator,
     exportWallet: exportPlatformWallet,
 };
+
+const displayPath = (path: string) => {
+    const homePrefix = `${HOME_DIR}/`;
+    if (path === HOME_DIR) {
+        return '~';
+    }
+    if (path.startsWith(homePrefix)) {
+        const relative = path.slice(homePrefix.length);
+        return relative ? `~/${relative}` : '~';
+    }
+    return path;
+};
+
+export const startupDiagnostics = (port: number) => ({
+    apiVersion: API_VERSION,
+    dataDir: displayPath(DATA_DIR),
+    keychain: KEYCHAIN_PROVIDER,
+    mode: DEV_MODE,
+    platform: process.platform,
+    url: `http://${HOST}:${port}`,
+    vault: displayPath(VAULT_PATH),
+});
 
 const bunServerFactory: ServerFactory = (options) => Bun.serve(options);
 
@@ -466,6 +497,13 @@ const limitRefreshRoute = (platform: ExportPlatform, state: LimitState): RouteEn
     },
 ];
 
+const versionRoute: RouteEntry = [
+    'GET /api/version',
+    {
+        handler: async () => json({ apiVersion: API_VERSION, appVersion: APP_VERSION }),
+    },
+];
+
 const emptyMutationRoute = (platform: ExportPlatform, action: 'clear', mutation: EmptyMutation): RouteEntry => [
     `POST /api/${platform}/${action}`,
     {
@@ -480,6 +518,7 @@ const emptyMutationRoute = (platform: ExportPlatform, action: 'clear', mutation:
 ];
 
 const routes = new Map<string, Route>([
+    versionRoute,
     stateRoute('antigravity', antigravityState),
     exportRoute('antigravity'),
     limitRefreshRoute('antigravity', antigravityState),
@@ -514,8 +553,24 @@ const routes = new Map<string, Route>([
             handler: async (req) => json(await checkInMinimax(await optionalKey(req))),
         },
     ],
+    [
+        'POST /api/minimax/check-in-all',
+        {
+            handler: async (req) => {
+                if (Object.keys(await body(req)).length > 0) {
+                    throw publicError(400, 'JSON body must be empty');
+                }
+                return json(await checkInAllMinimax());
+            },
+        },
+    ],
     keyedMutationRoute('minimax', 'save', saveMinimax),
-    keyedMutationRoute('minimax', 'load', loadMinimax),
+    [
+        'POST /api/minimax/load',
+        {
+            handler: async (req) => json({ checkIn: await loadMinimax(await requiredKey(req)), ok: true }),
+        },
+    ],
     keyedMutationRoute('minimax', 'delete', deleteMinimax),
 ]);
 
@@ -620,11 +675,33 @@ export const serveOnAvailablePort = (
 export const startServer = async () => {
     const assets = await buildAssets();
     const server = serveOnAvailablePort(assets);
-
-    console.log(`Dondo running at http://${HOST}:${server.port}`);
+    const diagnostics = startupDiagnostics(server.port ?? PORT);
+    console.log(`Dondo running at ${diagnostics.url}`);
+    console.log(
+        `Dondo config: api=${diagnostics.apiVersion} mode=${diagnostics.mode} platform=${diagnostics.platform} keychain=${diagnostics.keychain} data=${diagnostics.dataDir} vault=${diagnostics.vault}`,
+    );
     return server;
 };
 
 if (import.meta.main) {
-    await startServer();
+    const exitCode = await runCli(process.argv.slice(2));
+    if (exitCode === null) {
+        const server = await startServer();
+        let stopping = false;
+        const stop = async (signalExitCode: number) => {
+            if (stopping) {
+                return;
+            }
+            stopping = true;
+            try {
+                await server.stop(true);
+            } finally {
+                process.exitCode = signalExitCode;
+            }
+        };
+        process.once('SIGINT', () => void stop(130));
+        process.once('SIGTERM', () => void stop(143));
+    } else {
+        process.exitCode = exitCode;
+    }
 }

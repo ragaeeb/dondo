@@ -1,5 +1,6 @@
 import { expect, it } from 'bun:test';
 import { createServer } from 'node:net';
+import { DEV_MODE, KEYCHAIN_PROVIDER } from './config.ts';
 import { publicError } from './errors.ts';
 import {
     API_RATE_LIMIT_MAX,
@@ -7,6 +8,7 @@ import {
     MAX_EXPORT_PAYLOAD_BYTES,
     MAX_JSON_BODY_BYTES,
     serveOnAvailablePort,
+    startupDiagnostics,
 } from './server.ts';
 
 const assets = {
@@ -80,6 +82,32 @@ it('should reject non-local API origins', async () => {
     );
 
     expect(response.status).toBe(403);
+});
+
+it('should expose a non-cacheable local API version contract', async () => {
+    const response = await app(new Request('http://127.0.0.1:3000/api/version'));
+    const payload = (await response.json()) as { apiVersion?: unknown; appVersion?: unknown };
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(payload).toEqual({ apiVersion: 1, appVersion: expect.any(String) });
+});
+
+it('should expose only home-contracted safe startup diagnostics', () => {
+    const diagnostics = startupDiagnostics(4321);
+    const serialized = JSON.stringify(diagnostics);
+
+    expect(diagnostics.url).toBe('http://127.0.0.1:4321');
+    expect(diagnostics.platform).toBe(process.platform);
+    expect(diagnostics.mode).toBe(DEV_MODE);
+    expect(diagnostics.keychain).toBe(KEYCHAIN_PROVIDER);
+    expect(diagnostics.dataDir).toMatch(/^~\//u);
+    expect(diagnostics.vault).toMatch(/^~\//u);
+    if (process.env.HOME) {
+        expect(serialized).not.toContain(process.env.HOME);
+    }
+    expect(serialized).not.toContain('access_token');
+    expect(serialized).not.toContain('refresh_token');
 });
 
 it('should reject a local origin on a different port', async () => {
@@ -205,6 +233,21 @@ it('should reject unsupported API methods before reading a body', async () => {
 
     expect(response.status).toBe(405);
     expect(await json(response)).toEqual({ error: 'Method not allowed' });
+});
+
+it('should expose MiniMax check-in-all only as an empty-body POST action', async () => {
+    const getResponse = await app(new Request('http://127.0.0.1:3000/api/minimax/check-in-all'));
+    expect(getResponse.status).toBe(405);
+
+    const keyedResponse = await app(
+        new Request('http://127.0.0.1:3000/api/minimax/check-in-all', {
+            body: '{"key":"private-label"}',
+            headers: { 'Content-Type': 'application/json' },
+            method: 'POST',
+        }),
+    );
+    expect(keyedResponse.status).toBe(400);
+    expect(await json(keyedResponse)).toEqual({ error: 'JSON body must be empty' });
 });
 
 it('should reject malformed JSON bodies before service calls', async () => {

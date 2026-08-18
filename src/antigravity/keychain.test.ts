@@ -1,13 +1,10 @@
 import { expect, it } from 'bun:test';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type { run } from '../shell.ts';
 import type { AntigravityCredential } from '../types.ts';
-import {
-    clearLiveAuth,
-    deleteLivePassword,
-    parsePassword,
-    readCurrentSnapshot,
-    replaceLiveSnapshot,
-} from './keychain.ts';
+import { deleteLivePassword, parsePassword, readCurrentSnapshot, replaceLiveSnapshot } from './keychain.ts';
 
 const snapshot = (password: string): AntigravityCredential => ({
     account: 'antigravity',
@@ -61,7 +58,7 @@ it('should wrap Keychain read failures in fixed public copy', async () => {
     expect(String(error)).not.toContain('private');
 });
 
-it('should replace an absent credential through repeated prompted stdin without a secret argv', async () => {
+it('should replace an absent credential with the historical security CLI invocation', async () => {
     const next = snapshot('go-keyring-base64:private-snapshot');
     const invocations: Array<{ args: string[]; stdin: string | undefined }> = [];
     const runCommand = (async (_cmd, args, options) => {
@@ -78,10 +75,11 @@ it('should replace an absent credential through repeated prompted stdin without 
     await replaceLiveSnapshot(next, runCommand);
 
     const add = invocations.find(({ args }) => args[0] === 'add-generic-password');
-    expect(add?.args.at(-1)).toBe('-w');
-    expect(add?.args).not.toContain(next.password);
+    expect(add?.args.at(-3)).toBe('-w');
+    expect(add?.args.at(-2)).toBe(next.password);
+    expect(add?.args.at(-1)).toBe('-U');
     expect(add?.args).not.toContain('login.keychain-db');
-    expect(add?.stdin).toBe(`${next.password}\n${next.password}\n`);
+    expect(add?.stdin).toBeUndefined();
 });
 
 it('should restore the previous credential after a failed replacement', async () => {
@@ -110,13 +108,13 @@ it('should restore the previous credential after a failed replacement', async ()
     await expect(replaceLiveSnapshot(next, runCommand)).rejects.toThrow(
         'Dondo could not replace the Antigravity credential in macOS Keychain',
     );
-    expect(additions.map(({ stdin }) => stdin)).toEqual([
-        `${next.password}\n${next.password}\n`,
-        `${previous.password}\n${previous.password}\n`,
+    expect(additions.map(({ args }) => args.slice(-3))).toEqual([
+        ['-w', next.password, '-U'],
+        ['-w', previous.password, '-U'],
     ]);
+    expect(additions.map(({ stdin }) => stdin)).toEqual([undefined, undefined]);
     for (const addition of additions) {
-        expect(addition.args).not.toContain(next.password);
-        expect(addition.args).not.toContain(previous.password);
+        expect(addition.args).not.toContain('login.keychain-db');
     }
 });
 
@@ -189,30 +187,43 @@ it('should ignore only Keychain not-found failures when deleting a live credenti
     expect(String(error)).not.toContain('security failed 55');
 });
 
-it('should preserve the live credential when local-state cleanup fails', async () => {
-    let deleted = false;
-    const runCommand = (async () => {
-        deleted = true;
-        return { stderr: '', stdout: '' };
-    }) as typeof run;
-    const clearState = async () => {
-        expect(deleted).toBe(false);
-        throw new Error('cleanup failed');
-    };
+it('should clear only the live credential and preserve all Antigravity application state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dondo-antigravity-state-preservation-'));
+    const protectedFiles = [
+        join(root, '.antigravity-agent', 'cloud_accounts.db'),
+        join(root, '.gemini', 'antigravity', 'conversations', 'saved-chat'),
+        join(root, '.gemini', 'antigravity', 'brain', 'saved-memory'),
+        join(root, '.gemini', 'antigravity', 'knowledge', 'saved-knowledge'),
+        join(root, '.gemini', 'antigravity', 'antigravity_state.pbtxt'),
+        join(root, '.gemini', 'antigravity-ide', 'conversations', 'saved-chat'),
+        join(root, '.gemini', 'antigravity-backup', 'conversations', 'saved-chat'),
+        join(root, 'Library', 'Application Support', 'Antigravity', 'app_storage.json'),
+    ];
 
-    await expect(clearLiveAuth(runCommand, clearState)).rejects.toThrow('cleanup failed');
-    expect(deleted).toBe(false);
-});
+    try {
+        for (const path of protectedFiles) {
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, 'preserve-user-state');
+        }
+        const script = `
+            const { clearLiveAuth } = await import('./src/antigravity/keychain.ts');
+            const runCommand = async () => ({ stderr: '', stdout: '' });
+            await clearLiveAuth(runCommand);
+        `;
+        const proc = Bun.spawn([process.execPath, '--eval', script], {
+            cwd: process.cwd(),
+            env: { ...process.env, HOME: root },
+            stderr: 'pipe',
+            stdout: 'pipe',
+        });
+        const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
 
-it('should delete the live credential only after local-state cleanup succeeds', async () => {
-    const events: string[] = [];
-    const runCommand = (async () => {
-        events.push('delete');
-        return { stderr: '', stdout: '' };
-    }) as typeof run;
-
-    await clearLiveAuth(runCommand, async () => {
-        events.push('clear-state');
-    });
-    expect(events).toEqual(['clear-state', 'delete']);
+        expect(exitCode).toBe(0);
+        expect(stderr).toBe('');
+        expect(await Promise.all(protectedFiles.map((path) => readFile(path, 'utf8')))).toEqual(
+            protectedFiles.map(() => 'preserve-user-state'),
+        );
+    } finally {
+        await rm(root, { force: true, recursive: true });
+    }
 });

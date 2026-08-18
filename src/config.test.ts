@@ -44,3 +44,9 @@ it('uses the Antigravity macOS process name by default', async () => {
     }
     expect(JSON.parse(stdout)).toEqual({ processName: 'Antigravity' });
 });
+
+it('does not expose destructive Antigravity application-state paths', async () => {
+    const config = (await import('./config.ts')) as Record<string, unknown>;
+
+    expect('ANTIGRAVITY_LOCAL_STATE_PATHS' in config).toBe(false);
+});

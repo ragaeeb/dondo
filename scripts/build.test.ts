@@ -4,6 +4,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildDistribution } from './build.ts';
 
+const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+const MAX_ICON_BYTES = 200_000;
+
+it('should keep the source icon as a bounded 512 by 512 PNG', async () => {
+    const bytes = await Bun.file(join(process.cwd(), 'icon.png')).bytes();
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+    expect([...bytes.slice(0, PNG_SIGNATURE.length)]).toEqual(PNG_SIGNATURE);
+    expect(view.getUint32(8)).toBe(13);
+    expect(String.fromCharCode(...bytes.slice(12, 16))).toBe('IHDR');
+    expect(view.getUint32(16)).toBe(512);
+    expect(view.getUint32(20)).toBe(512);
+    expect(bytes.byteLength).toBeLessThanOrEqual(MAX_ICON_BYTES);
+});
+
 const startedServerUrl = async (child: Bun.Subprocess<'ignore', 'pipe', 'pipe'>) => {
     const reader = child.stdout.getReader();
     const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -51,15 +66,21 @@ it('builds a runnable distribution with its browser assets', async () => {
         const response = await fetch(serverUrl);
         expect(response.status).toBe(200);
         expect(await response.text()).toContain('<title>Dondo</title>');
-        const [appJs, css, icon] = await Promise.all([
+        const [appJs, css, icon, favicon] = await Promise.all([
             fetch(`${serverUrl}/assets/app.js`),
             fetch(`${serverUrl}/assets/styles.css`),
             fetch(`${serverUrl}/icon.png`),
+            fetch(`${serverUrl}/favicon.ico`),
         ]);
-        expect([appJs.status, css.status, icon.status]).toEqual([200, 200, 200]);
+        expect([appJs.status, css.status, icon.status, favicon.status]).toEqual([200, 200, 200, 200]);
         expect((await appJs.text()).length).toBeGreaterThan(1_000);
         expect((await css.text()).length).toBeGreaterThan(1_000);
-        expect((await icon.bytes()).byteLength).toBeGreaterThan(1_000);
+        expect(icon.headers.get('content-type')).toBe('image/png');
+        expect(favicon.headers.get('content-type')).toBe('image/png');
+        const iconBytes = await icon.bytes();
+        const faviconBytes = await favicon.bytes();
+        expect(iconBytes.byteLength).toBeGreaterThan(1_000);
+        expect(faviconBytes).toEqual(iconBytes);
     } finally {
         child?.kill('SIGKILL');
         await child?.exited.catch(() => undefined);

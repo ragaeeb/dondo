@@ -38,16 +38,21 @@ const getAvailablePort = async () =>
     });
 
 const runCommand = async (argv: string[], cwd: string) => {
-    const proc = Bun.spawn(argv, { cwd, stderr: 'pipe', stdout: 'pipe' });
+    const { exitCode, stderrText, stdoutText } = await runCommandResult(argv, cwd);
+    if (exitCode !== 0) {
+        throw new Error(`${argv.join(' ')} failed\n${stdoutText}\n${stderrText}`.trim());
+    }
+    return { stderrText, stdoutText };
+};
+
+const runCommandResult = async (argv: string[], cwd: string, env?: NodeJS.ProcessEnv) => {
+    const proc = Bun.spawn(argv, { cwd, ...(env ? { env } : {}), stderr: 'pipe', stdout: 'pipe' });
     const [exitCode, stdoutText, stderrText] = await Promise.all([
         proc.exited,
         new Response(proc.stdout).text(),
         new Response(proc.stderr).text(),
     ]);
-    if (exitCode !== 0) {
-        throw new Error(`${argv.join(' ')} failed\n${stdoutText}\n${stderrText}`.trim());
-    }
-    return { stderrText, stdoutText };
+    return { exitCode, stderrText, stdoutText };
 };
 
 const waitForHealthyUi = async (url: string) => {
@@ -139,6 +144,36 @@ describe('packaged UI smoke', () => {
                     stderrPromise.catch(() => ''),
                 ]);
             }
+        } finally {
+            await rm(tempDir, { force: true, recursive: true });
+        }
+    }, 60_000);
+
+    it('should dispatch the packaged bunx account-cycle CLI without exposing account inventory', async () => {
+        const manifest = (await Bun.file('package.json').json()) as PackageManifest;
+        const tempDir = await mkdtemp(join(tmpdir(), 'dondo-packaged-cli-smoke-'));
+        try {
+            await runCommand(['bun', 'pm', 'pack', '--destination', tempDir], process.cwd());
+            const tarball = packageTarballPath(tempDir, manifest);
+            const result = await runCommandResult(
+                ['bunx', '--package', tarball, manifest.name, 'minimax', 'next', '--json'],
+                tempDir,
+                { ...process.env, DONDO_DATA_DIR: join(tempDir, 'data') },
+            );
+
+            expect(result.exitCode).toBe(1);
+            expect(result.stdoutText).toBe('');
+            expect(result.stderrText).toEndWith(
+                `${JSON.stringify({
+                    action: 'next',
+                    code: 'ACCOUNT_SWITCH_FAILED',
+                    error: 'No saved MiniMax account could be loaded',
+                    ok: false,
+                    platform: 'minimax',
+                })}\n`,
+            );
+            expect(`${result.stdoutText}${result.stderrText}`).not.toContain('accounts');
+            expect(`${result.stdoutText}${result.stderrText}`).not.toContain('token');
         } finally {
             await rm(tempDir, { force: true, recursive: true });
         }

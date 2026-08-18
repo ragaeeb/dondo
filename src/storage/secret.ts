@@ -1,11 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { VAULT_KEY_ACCOUNT, VAULT_KEY_SERVICE } from '../config.ts';
+import { DEV_MODE, VAULT_KEY_ACCOUNT, VAULT_KEY_SERVICE } from '../config.ts';
 import { publicError } from '../errors.ts';
+import { mockKeychainRun } from '../mock-keychain.ts';
 import { isRunError, run } from '../shell.ts';
 
 export type VaultKeyMode = 'create' | 'existing';
 
 const SECURITY_PATH = '/usr/bin/security';
+const defaultRunCommand = DEV_MODE === 'mock' ? mockKeychainRun : run;
 
 const digestSecret = (secret: string) => createHash('sha256').update(secret).digest();
 
@@ -27,7 +29,7 @@ const readVaultSecret = async (runCommand: typeof run) => {
         });
 };
 
-export const storeVaultSecret = async (secret: string, runCommand: typeof run = run) => {
+export const storeVaultSecret = async (secret: string, runCommand: typeof run = defaultRunCommand) => {
     await runCommand(SECURITY_PATH, ['add-generic-password', '-s', VAULT_KEY_SERVICE, '-a', VAULT_KEY_ACCOUNT, '-w'], {
         stdin: `${secret}\n${secret}\n`,
     });
@@ -69,7 +71,7 @@ const loadOrCreateVaultKey = async (runCommand: typeof run) => {
     return digestSecret(stored);
 };
 
-export const createVaultKeyProvider = (runCommand: typeof run = run) => {
+export const createVaultKeyProvider = (runCommand: typeof run = defaultRunCommand) => {
     let cachedKey: Buffer | undefined;
     let pendingKey: Promise<Buffer> | undefined;
     return async (mode: VaultKeyMode) => {

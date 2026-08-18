@@ -6,13 +6,13 @@ import {
     stateVersion,
 } from '../account-state.ts';
 import { createAsyncQueue } from '../async-queue.ts';
-import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_PROCESS_NAME, ANTIGRAVITY_SERVICE, VAULT_PATH } from '../config.ts';
+import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_PROCESS_NAME, ANTIGRAVITY_SERVICE, DEV_MODE, VAULT_PATH } from '../config.ts';
 import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { isProcessRunning } from '../process.ts';
 import { readVaultSection, updateVaultSection } from '../storage/vault.ts';
 import type { AntigravityCredential, LimitResult, PlatformVault, Snapshot } from '../types.ts';
 import { decodeToken, fetchLimits, resolveGoogleIdentity } from './google.ts';
-import { clearLiveAuth, clearLocalState, readCurrentSnapshot, replaceLiveSnapshot } from './keychain.ts';
+import { clearLiveAuth, readCurrentSnapshot, replaceLiveSnapshot } from './keychain.ts';
 
 type AntigravityLimitUpdate = {
     key: string;
@@ -54,6 +54,13 @@ const isReadableSnapshot = (snapshot: Snapshot) => {
     return isReadableCredential(snapshot) && Boolean(snapshot.identity.trim());
 };
 
+const resolveIdentity = async (credential: AntigravityCredential): Promise<{ identity: string; password?: string }> => {
+    if (DEV_MODE === 'mock') {
+        return { identity: 'mock-account' };
+    }
+    return resolveGoogleIdentity(credential);
+};
+
 const liveIdentity = async (credential: AntigravityCredential | null) => {
     if (!credential || !isReadableCredential(credential)) {
         return null;
@@ -62,7 +69,7 @@ const liveIdentity = async (credential: AntigravityCredential | null) => {
     if (liveIdentityCache?.passwordVersion === passwordVersion) {
         return liveIdentityCache.identity;
     }
-    const resolved = await resolveGoogleIdentity(credential);
+    const resolved = await resolveIdentity(credential);
     liveIdentityCache = { identity: resolved.identity, passwordVersion };
     return resolved.identity;
 };
@@ -85,7 +92,7 @@ const assertAntigravityClosed = async () => {
     if (await isProcessRunning(ANTIGRAVITY_PROCESS_NAME)) {
         throw publicError(
             409,
-            'Quit Antigravity completely before clearing or loading an account. Antigravity must be closed while Dondo replaces its local login state.',
+            'Quit Antigravity completely before clearing or loading an account. Antigravity must be closed while Dondo replaces its Keychain credential.',
         );
     }
 };
@@ -93,6 +100,9 @@ const assertAntigravityClosed = async () => {
 const fetchAntigravityLimitUpdates = async (section: PlatformVault, force: boolean, targetKey?: string) => {
     if (targetKey) {
         assertReadableAccount(section, targetKey);
+    }
+    if (DEV_MODE === 'mock') {
+        return [];
     }
     const readableData = Object.fromEntries(
         Object.entries(section.data).filter(([, snapshot]) => isReadableSnapshot(snapshot)),
@@ -119,7 +129,7 @@ const saveAntigravityOperation = async (key: string) => {
     if (!isReadableCredential(credential)) {
         throw publicError(400, 'Current Antigravity credential payload is invalid');
     }
-    const resolved = await resolveGoogleIdentity(credential).catch(() => {
+    const resolved = await resolveIdentity(credential).catch(() => {
         throw publicError(502, 'Could not verify the current Antigravity account identity');
     });
     const snapshot: Snapshot = {
@@ -148,7 +158,6 @@ const loadAntigravityOperation = async (key: string) => {
     const safeKey = assertAccountKey(key);
     await assertAntigravityClosed();
     const snapshot = assertReadableAccount(await readVaultSection('antigravity'), safeKey);
-    await clearLocalState();
     await replaceLiveSnapshot(snapshot);
     liveIdentityCache = { identity: snapshot.identity, passwordVersion: stateVersion(snapshot.password) };
 };
@@ -206,7 +215,7 @@ export const antigravityState = async (options: { refreshLimitKey?: string; refr
                   return { result: current, write: changed };
               });
     const live = await queueAntigravityOperation(() => readCurrentSnapshot().catch(() => null));
-    const activeIdentity = await liveIdentity(live).catch(() => null);
+    const activeIdentity = await queueAntigravityOperation(() => liveIdentity(live).catch(() => null));
     const healthyEntries = Object.entries(section.data).map(([key, saved]: [string, Snapshot]) => {
         const snapshotValid = isReadableSnapshot(saved);
         const cached = section.limits[key];

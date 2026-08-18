@@ -35,6 +35,19 @@ bunx dondo-donuts
 Open the URL printed by the server. Dondo starts at `http://127.0.0.1:3000` by default and tries the next available
 port when that port is occupied. It never binds to a non-loopback interface.
 
+To cycle a saved MiniMax or Kiro account without opening the UI, use the CLI:
+
+```sh
+bunx dondo-donuts minimax next
+bunx dondo-donuts kiro next
+```
+
+Add `--json` for a stable machine-readable result. Cycling uses deterministic saved-account order, wraps after the
+last account, and skips unavailable sessions until one loads. It never accepts an account label and never lists or
+prints saved labels, account identities, indices, or credentials. JSON failures use the stable
+`{ action, code, error, ok, platform }` shape; skipped-account diagnostics are omitted in JSON mode. Kiro must be fully
+quit before cycling.
+
 ## Using Dondo
 
 Open a platform tab and use `Save current` while that application's desired account is live. A saved account can then
@@ -43,17 +56,15 @@ saved account for one platform as an unencrypted JSON attachment after an explic
 
 ### Antigravity switching
 
-Loading Antigravity replaces its live Keychain credential and removes these local state paths before restoration:
+Loading Antigravity replaces only its live macOS Keychain credential. `Clear live` deletes only that Keychain item.
+Dondo does not delete Antigravity application data: conversation history, projects, agent memory, knowledge, settings,
+backups, and caches remain owned by Antigravity and are preserved across account switches. If Antigravity changes its
+authentication storage contract, Dondo must fail safely instead of deleting application data in an attempt to repair
+the session.
 
-- `~/.antigravity-agent/cloud_accounts.db`
-- `~/.gemini/antigravity`
-- `~/.gemini/antigravity-ide`
-- `~/.gemini/antigravity-backup`
-- `~/Library/Application Support/Antigravity`
-
-`Clear live` deletes the live Keychain item and the same local state. Antigravity must be fully quit before loading or
-clearing; Dondo rejects either operation while its process is running so it cannot restore stale state. Reopen it after
-the operation. These actions change local login state; they do not remotely revoke the account.
+Antigravity must be fully quit before loading or clearing; Dondo rejects either operation while its process is running.
+Reopen it after the operation. These actions change local login state; they do not remotely revoke the account. If a
+replacement fails, Dondo restores the previous Keychain credential when possible.
 
 ### Kiro switching
 
@@ -63,7 +74,9 @@ a new label. To switch later, quit Kiro, load the saved account in Dondo, and re
 
 Dondo snapshots Kiro's auth token, optional profile, and matching client registration. Loading validates or refreshes
 the saved session, stages the replacement files, and then commits them with `0600` permissions. Clearing removes those
-local account files without calling Kiro's remote logout endpoint. Kiro intentionally has no `Sync current` row action.
+local account files without calling Kiro's remote logout endpoint. The refreshed saved snapshot is persisted before the
+live-file commit, so a failed live commit leaves the rotated saved credentials available while the live files are rolled
+back independently. Kiro intentionally has no `Sync current` row action.
 
 ## Vault and recovery
 
@@ -118,8 +131,9 @@ failed stream is aborted so a partial file is not committed. Other browsers use 
 | Kiro | `~/.aws/sso/cache/kiro-auth-token.json` plus related profile/registration | Agentic-request usage |
 | MiniMax | `~/Library/Application Support/MiniMax Agent/minimax-agent-config.json` | 5-hour, weekly, and credit balance |
 
-MiniMax also provides `Daily Check-In`. A successful claim invalidates the affected cached limits so the credit balance
-can be refreshed.
+Loading a MiniMax account automatically performs its Daily Check-In before replacing the live configuration. The
+MiniMax toolbar can check in every saved account with concurrency bounded to three; failures are isolated and reported
+only as aggregate counts. Successful claims invalidate affected cached limits so credit balances can be refreshed.
 
 Codex snapshots follow the current Codex CLI auth contract: API-key accounts use `auth_mode: "apikey"` and ChatGPT
 accounts use `auth_mode: "chatgpt"`. The historical `auth_mode: "api_key"` spelling is rejected; sign in again with a
@@ -171,6 +185,7 @@ require `Content-Type: application/json` and a top-level object.
 
 The complete route surface is:
 
+- `GET /api/version` for the local API version contract.
 - `GET /api/{platform}/state` for `antigravity`, `codex`, `cline`, `kiro`, and `minimax`.
 - `POST /api/{platform}/export` for all five platforms. It requires `X-Dondo-Export: 1`.
 - `POST /api/{platform}/save`, `/load`, and `/delete` for all five platforms with `{ "key": "label" }`.
@@ -178,6 +193,7 @@ The complete route surface is:
   `{ "key": "label" }`.
 - `POST /api/antigravity/clear` and `POST /api/kiro/clear` with an empty JSON object.
 - `POST /api/minimax/check-in` with optional `{ "key": "label" }`.
+- `POST /api/minimax/check-in-all` with an empty JSON object; its response contains aggregate counts only.
 
 The server accepts at most **16 KiB** per JSON request body, serializes at most **8 MiB** per export attachment, and
 reads at most **16 MiB** from the vault file. Local API traffic is rate limited to 120 requests per 10 seconds.
@@ -191,10 +207,12 @@ State, limit, mutation, and error responses are non-cacheable and never contain 
 token-bearing API response. It is a local-only, non-cacheable attachment and should be protected like the original auth
 files.
 
-When Dondo writes a vault secret or Antigravity credential through the macOS `security` CLI, it sends the secret over
-the child process's standard input instead of placing it in the process argument list. Command failures redact both
-private input and recognizable token fields. macOS may still show a Keychain access prompt, and another process running
-as the logged-in user remains within the local trust boundary.
+When Dondo writes the vault key through the macOS `security` CLI, it sends the secret over the child process's standard
+input. Antigravity replacement preserves the historical `security -w <credential>` invocation so loading does not
+enter the CLI's interactive confirmation flow; the credential can therefore be briefly visible in the child process
+arguments to another process running as the logged-in user. Command failures redact private input and recognizable
+token fields. macOS may still show a Keychain access prompt, and another process running as the logged-in user remains
+within the local trust boundary.
 
 ## Development
 
@@ -204,7 +222,22 @@ bun run dev
 ```
 
 `bun run dev` restarts the local server when runtime TypeScript, TSX, CSS, package metadata, or icons change. Test-only
-edits do not restart it. Run the full gates before submitting a change:
+edits do not restart it.
+
+For contributor work that should not touch real credentials or application profiles, use:
+
+```sh
+bun run dev:mock
+```
+
+Mock development creates a fresh temporary sandbox for the vault, home directory, platform files, and in-memory
+Keychain on each server process. It seeds only a synthetic Antigravity credential, never calls the real Keychain, and
+resets when the server restarts. This mode is for local development only and is not a persistence or production mode.
+
+For opt-in storage profiling, run `bun run bench:vault`. The benchmark uses temporary synthetic vaults, reports median
+and p95 timings for representative sizes through the 4,096-account limit, and does not change the vault format.
+
+Run the full gates before submitting a change:
 
 ```sh
 bun run lint
