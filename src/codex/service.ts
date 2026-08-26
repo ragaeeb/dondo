@@ -101,7 +101,25 @@ export const saveCodex = async (key: string) => {
 
 export const loadCodex = async (key: string) => {
     const safeKey = assertAccountKey(key);
-    const snapshot = assertReadableAccount(await readVaultSection('codex'), safeKey);
+    const currentAuthText = await liveAuth().catch(() => '');
+    const currentAuth = parseCodexAuth(currentAuthText);
+    const snapshot = await updateVaultSection('codex', (section) => {
+        let target = assertReadableAccount(section, safeKey);
+        const activeKey = Object.entries(section.data).find(([, saved]) =>
+            isSameAuth(currentAuth, parseCodexAuth(saved.auth)),
+        )?.[0];
+        const active = activeKey ? section.data[activeKey] : undefined;
+        if (activeKey && active && currentAuth && currentAuthText !== active.auth) {
+            const updated = { ...active, auth: currentAuthText, updatedAt: new Date().toISOString() };
+            section.data[activeKey] = updated;
+            delete section.limits[activeKey];
+            if (activeKey === safeKey) {
+                target = updated;
+            }
+            return { result: target };
+        }
+        return { result: target, write: false };
+    });
     await writePrivateFile(CODEX_AUTH_PATH, snapshot.auth);
 };
 

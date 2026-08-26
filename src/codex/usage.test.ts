@@ -221,11 +221,34 @@ it('should accept null for current optional Codex auth fields', async () => {
     ).resolves.toMatchObject({ quota: { ok: false } });
 });
 
+it('should accept current Codex auth when auth_mode is omitted', async () => {
+    globalThis.fetch = (async () =>
+        Response.json({ rate_limit: { primary_window: { used_percent: 25 } } })) as unknown as typeof fetch;
+
+    const result = await fetchCodexLimits(
+        JSON.stringify({
+            last_refresh: '2026-08-26T03:34:22.633040Z',
+            OPENAI_API_KEY: null,
+            tokens: {
+                access_token: jwt({ exp: Math.floor(Date.now() / 1000) + 3600 }),
+                account_id: 'account',
+                id_token: 'id-token',
+                refresh_token: 'refresh',
+            },
+        }),
+    );
+
+    expect(result.quota.ok).toBe(true);
+});
+
 it('should accept only the current apikey auth mode spelling', async () => {
     await expect(fetchCodexLimits(JSON.stringify({ auth_mode: 'api_key', OPENAI_API_KEY: 'key' }))).rejects.toThrow(
         'invalid or incomplete',
     );
     await expect(fetchCodexLimits(JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'key' }))).resolves.toEqual({
+        quota: { error: 'Codex usage is only available for ChatGPT login accounts', ok: false },
+    });
+    await expect(fetchCodexLimits(JSON.stringify({ OPENAI_API_KEY: 'key' }))).resolves.toEqual({
         quota: { error: 'Codex usage is only available for ChatGPT login accounts', ok: false },
     });
 });

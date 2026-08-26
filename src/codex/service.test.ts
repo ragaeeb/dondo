@@ -196,3 +196,43 @@ it('should not attach a stale Codex refresh to a replacement account', async () 
         await rm(dir, { force: true, recursive: true });
     }
 });
+
+it('should sync the live Codex auth before loading another account', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-codex-load-sync-test-'));
+    const authPath = join(dir, 'auth.json');
+    const vaultPath = join(dir, 'vault.json');
+    const script = `
+        const { loadCodex, saveCodex } = await import('./src/codex/service.ts');
+        const { readVaultSection } = await import('./src/storage/vault.ts');
+        const auth = (id, version) => JSON.stringify({
+            auth_mode: 'chatgpt',
+            last_refresh: version,
+            tokens: {
+                access_token: 'access-' + id + '-' + version,
+                account_id: id,
+                id_token: 'id-' + id + '-' + version,
+                refresh_token: 'refresh-' + id + '-' + version,
+            },
+        });
+        const active = auth('active', 'initial');
+        const refreshed = auth('active', 'refreshed');
+        const target = auth('target', 'target');
+        await Bun.write(process.env.CODEX_AUTH_PATH, active);
+        await saveCodex('active');
+        await Bun.write(process.env.CODEX_AUTH_PATH, target);
+        await saveCodex('target');
+        await Bun.write(process.env.CODEX_AUTH_PATH, refreshed);
+        await loadCodex('target');
+        const section = await readVaultSection('codex');
+        console.log(JSON.stringify({
+            active: JSON.parse(section.data.active.auth).last_refresh,
+            loadedTarget: await Bun.file(process.env.CODEX_AUTH_PATH).text() === target,
+        }));
+    `;
+    try {
+        const result = await runScript(script, { CODEX_AUTH_PATH: authPath, DONDO_VAULT: vaultPath });
+        expect(result).toEqual({ active: 'refreshed', loadedTarget: true });
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});
