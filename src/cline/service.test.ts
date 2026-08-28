@@ -99,6 +99,53 @@ it('should save and load the current Cline providers file with encrypted vault s
     }
 });
 
+it('should cycle Cline accounts in label order and skip corrupted snapshots', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-cline-cycle-test-'));
+    const providersPath = join(dir, 'providers.json');
+    const vaultPath = join(dir, 'vault.json');
+    const script = `
+        const { cycleNextCline, saveCline } = await import('./src/cline/service.ts');
+        const { updateVaultSection } = await import('./src/storage/vault.ts');
+        const writeProviders = (id) => Bun.write(process.env.CLINE_PROVIDERS_PATH, JSON.stringify({
+            providers: {
+                cline: { settings: { provider: 'cline', auth: { accessToken: 'access-' + id, accountId: id } } },
+            },
+        }));
+        for (const id of ['gamma', 'alpha', 'beta']) {
+            await writeProviders(id);
+            await saveCline(id);
+        }
+        await updateVaultSection('cline', (section) => {
+            section.data.beta.secrets = '{}';
+            return { result: undefined };
+        });
+        await writeProviders('alpha');
+        let skipped = 0;
+        const result = await cycleNextCline({ onSkip: () => { skipped += 1; } });
+        const live = JSON.parse(await Bun.file(process.env.CLINE_PROVIDERS_PATH).text());
+        console.log(JSON.stringify({ accountId: live.providers.cline.settings.auth.accountId, healed: result.healed, skipped }));
+    `;
+    try {
+        const proc = Bun.spawn([process.execPath, '--eval', script], {
+            cwd: process.cwd(),
+            env: { ...process.env, CLINE_PROVIDERS_PATH: providersPath, DONDO_VAULT: vaultPath },
+            stderr: 'pipe',
+            stdout: 'pipe',
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+            proc.exited,
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+        ]);
+        if (exitCode !== 0) {
+            throw new Error(stderr);
+        }
+        expect(JSON.parse(stdout)).toEqual({ accountId: 'gamma', healed: true, skipped: 1 });
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});
+
 it('should reject a Cline providers file without an account token', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dondo-cline-invalid-test-'));
     const providersPath = join(dir, 'providers.json');

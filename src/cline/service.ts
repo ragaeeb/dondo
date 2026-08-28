@@ -1,5 +1,6 @@
 import { CORRUPTED_ACCOUNT_ERROR, sortAccountEntries } from '../account-state.ts';
 import { CLINE_PROVIDERS_PATH, VAULT_PATH } from '../config.ts';
+import { type CycleNextResult, type CycleSkipReporter, cycleNext, isUnavailableAccountError } from '../cycle.ts';
 import { assertAccountKey, publicError } from '../errors.ts';
 import { decodeJwtPayload } from '../jwt.ts';
 import { readBoundedLocalText, writePrivateFile } from '../storage/file.ts';
@@ -98,6 +99,24 @@ export const loadCline = async (key: string) => {
     const safeKey = assertAccountKey(key);
     const snap = assertReadableAccount(await readVaultSection('cline'), safeKey);
     await writePrivateFile(CLINE_PROVIDERS_PATH, snap.secrets);
+};
+
+export const cycleNextCline = async (options: { onSkip?: CycleSkipReporter } = {}): Promise<CycleNextResult> => {
+    const section = await readVaultSection('cline');
+    const current = await liveFile().catch(() => null);
+    const activeAccount = current ? (parseClineProviders(current.text)?.account ?? null) : null;
+    const activeKey = Object.entries(section.data)
+        .filter(([, snapshot]) => isSameAccount(activeAccount, parseClineProviders(snapshot.secrets)?.account ?? null))
+        .map(([key]) => key)
+        .sort((left, right) => left.localeCompare(right, 'en'))[0];
+    return cycleNext({
+        activeKey,
+        candidateKeys: [...Object.keys(section.data), ...Object.keys(section.corruptions ?? {})],
+        isUnavailable: isUnavailableAccountError,
+        load: loadCline,
+        noAvailableMessage: 'No saved Cline account could be loaded',
+        onSkip: options.onSkip,
+    });
 };
 
 export const deleteCline = async (key: string) => {

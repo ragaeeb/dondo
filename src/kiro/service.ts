@@ -17,7 +17,7 @@ import {
     KIRO_USER_AGENT,
     VAULT_PATH,
 } from '../config.ts';
-import { type CycleNextResult, type CycleSkipReporter, cycleCandidateKeys } from '../cycle.ts';
+import { type CycleNextResult, type CycleSkipReporter, cycleNext } from '../cycle.ts';
 import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { discardResponse, readBoundedResponseJson } from '../http.ts';
 import { withPlatformMutationLock } from '../mutation-lock.ts';
@@ -555,24 +555,14 @@ export const cycleNextKiro = async (options: { onSkip?: CycleSkipReporter } = {}
             await syncMatchingLiveKiro(originalAuthText);
             const section = await readVaultSection('kiro');
             const activeKey = matchingKiroEntry(section, parseKiroAuth(originalAuthText))?.[0];
-            const keys = cycleCandidateKeys(
-                [...Object.keys(section.data), ...Object.keys(section.corruptions ?? {})],
+            return cycleNext({
                 activeKey,
-            );
-            let healed = false;
-            for (const key of keys) {
-                try {
-                    await loadKiroMutation(key);
-                    return { healed };
-                } catch (error) {
-                    if (isKiroProcessRunningError(error) || !isKiroCandidateUnavailableError(error)) {
-                        throw error;
-                    }
-                    healed = true;
-                    options.onSkip?.();
-                }
-            }
-            throw publicError(409, 'No saved Kiro account could be loaded');
+                candidateKeys: [...Object.keys(section.data), ...Object.keys(section.corruptions ?? {})],
+                isUnavailable: (error) => !isKiroProcessRunningError(error) && isKiroCandidateUnavailableError(error),
+                load: loadKiroMutation,
+                noAvailableMessage: 'No saved Kiro account could be loaded',
+                onSkip: options.onSkip,
+            });
         }),
     );
 

@@ -6,6 +6,7 @@ import {
     stateVersion,
 } from '../account-state.ts';
 import { CODEX_AUTH_PATH, VAULT_PATH } from '../config.ts';
+import { type CycleNextResult, type CycleSkipReporter, cycleNext, isUnavailableAccountError } from '../cycle.ts';
 import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { readBoundedLocalText, writePrivateFile } from '../storage/file.ts';
 import { readVaultSection, updateVaultSection } from '../storage/vault.ts';
@@ -121,6 +122,23 @@ export const loadCodex = async (key: string) => {
         return { result: target, write: false };
     });
     await writePrivateFile(CODEX_AUTH_PATH, snapshot.auth);
+};
+
+export const cycleNextCodex = async (options: { onSkip?: CycleSkipReporter } = {}): Promise<CycleNextResult> => {
+    const section = await readVaultSection('codex');
+    const active = parseCodexAuth(await liveAuth().catch(() => ''));
+    const activeKey = Object.entries(section.data)
+        .filter(([, snapshot]) => isSameAuth(active, parseCodexAuth(snapshot.auth)))
+        .map(([key]) => key)
+        .sort((left, right) => left.localeCompare(right, 'en'))[0];
+    return cycleNext({
+        activeKey,
+        candidateKeys: [...Object.keys(section.data), ...Object.keys(section.corruptions ?? {})],
+        isUnavailable: isUnavailableAccountError,
+        load: loadCodex,
+        noAvailableMessage: 'No saved Codex account could be loaded',
+        onSkip: options.onSkip,
+    });
 };
 
 export const deleteCodex = async (key: string) => {

@@ -3,26 +3,41 @@ import { errorMessage, isPublicError } from './errors.ts';
 
 type CycleOperation = (onSkip: CycleSkipReporter) => Promise<CycleNextResult>;
 
+export type CyclePlatform = 'antigravity' | 'cline' | 'codex' | 'kiro' | 'minimax';
+
 export type CycleCliDependencies = {
-    cycleKiro: CycleOperation;
-    cycleMinimax: CycleOperation;
+    cycle: (platform: CyclePlatform, onSkip: CycleSkipReporter) => Promise<CycleNextResult>;
     writeStderr: (text: string) => void;
     writeStdout: (text: string) => void;
 };
 
-type CyclePlatform = 'kiro' | 'minimax';
+const platformLabels: Record<CyclePlatform, string> = {
+    antigravity: 'Antigravity',
+    cline: 'Cline',
+    codex: 'Codex',
+    kiro: 'Kiro',
+    minimax: 'MiniMax',
+};
+
+const cycleOperations: Record<CyclePlatform, CycleOperation> = {
+    antigravity: async (onSkip) => (await import('./antigravity/service.ts')).cycleNextAntigravity({ onSkip }),
+    cline: async (onSkip) => (await import('./cline/service.ts')).cycleNextCline({ onSkip }),
+    codex: async (onSkip) => (await import('./codex/service.ts')).cycleNextCodex({ onSkip }),
+    kiro: async (onSkip) => (await import('./kiro/service.ts')).cycleNextKiro({ onSkip }),
+    minimax: async (onSkip) => (await import('./minimax/service.ts')).cycleNextMinimax({ onSkip }),
+};
 
 const defaultDependencies: CycleCliDependencies = {
-    cycleKiro: async (onSkip) => (await import('./kiro/service.ts')).cycleNextKiro({ onSkip }),
-    cycleMinimax: async (onSkip) => (await import('./minimax/service.ts')).cycleNextMinimax({ onSkip }),
+    cycle: (platform, onSkip) => cycleOperations[platform](onSkip),
     writeStderr: (text) => process.stderr.write(text),
     writeStdout: (text) => process.stdout.write(text),
 };
 
-const USAGE = 'Usage: dondo-donuts <minimax|kiro> next [--json]\n';
+const USAGE = 'Usage: dondo-donuts <antigravity|cline|codex|kiro|minimax> next [--json]\n';
 const CLI_CYCLE_ERROR_CODE = 'ACCOUNT_SWITCH_FAILED';
 
-const displayPlatform = (platform: CyclePlatform) => (platform === 'kiro' ? 'Kiro' : 'MiniMax');
+const isCyclePlatform = (value: string | undefined): value is CyclePlatform =>
+    typeof value === 'string' && Object.hasOwn(platformLabels, value);
 
 export const runCli = async (
     args: readonly string[],
@@ -33,7 +48,7 @@ export const runCli = async (
     }
     const [platformValue, action, option] = args;
     if (
-        (platformValue !== 'kiro' && platformValue !== 'minimax') ||
+        !isCyclePlatform(platformValue) ||
         action !== 'next' ||
         (option !== undefined && option !== '--json') ||
         args.length > 3
@@ -43,7 +58,7 @@ export const runCli = async (
     }
 
     const platform = platformValue;
-    const label = displayPlatform(platform);
+    const label = platformLabels[platform];
     const machineReadable = option === '--json';
     const onSkip = () => {
         if (!machineReadable) {
@@ -51,7 +66,7 @@ export const runCli = async (
         }
     };
     try {
-        const result = await (platform === 'kiro' ? dependencies.cycleKiro(onSkip) : dependencies.cycleMinimax(onSkip));
+        const result = await dependencies.cycle(platform, onSkip);
         dependencies.writeStdout(
             machineReadable
                 ? `${JSON.stringify({ action: 'next', healed: result.healed, ok: true, platform })}\n`

@@ -1,4 +1,7 @@
 import { expect, it } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const runAntigravityScript = async (script: string, env: Record<string, string> = {}) => {
     const proc = Bun.spawn([process.execPath, '--eval', script], {
@@ -225,6 +228,53 @@ it('should reject Antigravity load and clear while the app is running', async ()
         loadError:
             'Error: Quit Antigravity completely before clearing or loading an account. Antigravity must be closed while Dondo replaces its Keychain credential.',
     });
+});
+
+it('should cycle Antigravity accounts in label order and skip corrupted snapshots', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-antigravity-cycle-test-'));
+    const vaultPath = join(dir, 'vault.json');
+    const script = `
+        const { mock } = await import('bun:test');
+        const password = (id) => Buffer.from(JSON.stringify({ token: { access_token: 'access-' + id } })).toString('base64');
+        const credential = (id) => ({
+            account: 'antigravity', createdAt: '2026-01-01T00:00:00.000Z', kind: 'Generic Password', label: 'gemini',
+            password: password(id), service: 'gemini', updatedAt: '2026-01-01T00:00:00.000Z',
+        });
+        let current = 'alpha';
+        mock.module('./src/antigravity/google.ts', () => ({
+            decodeToken: (value) => value === 'corrupt' ? null : ({ token: { access_token: 'valid' } }),
+            fetchLimits: async () => ({ quota: { error: 'not refreshed', ok: false } }),
+            resolveGoogleIdentity: async () => ({ identity: current }),
+        }));
+        mock.module('./src/antigravity/keychain.ts', () => ({
+            clearLiveAuth: async () => {},
+            readCurrentSnapshot: async () => credential(current),
+            replaceLiveSnapshot: async (snapshot) => { current = snapshot.identity; },
+        }));
+        const { cycleNextAntigravity, saveAntigravity } = await import('./src/antigravity/service.ts');
+        const { updateVaultSection } = await import('./src/storage/vault.ts');
+        for (const id of ['gamma', 'alpha', 'beta']) {
+            current = id;
+            await saveAntigravity(id);
+        }
+        await updateVaultSection('antigravity', (section) => {
+            section.data.beta.password = 'corrupt';
+            return { result: undefined };
+        });
+        current = 'alpha';
+        let skipped = 0;
+        const result = await cycleNextAntigravity({ onSkip: () => { skipped += 1; } });
+        console.log(JSON.stringify({ current, healed: result.healed, skipped }));
+    `;
+    try {
+        expect(await runAntigravityScript(script, { DONDO_VAULT: vaultPath })).toEqual({
+            current: 'gamma',
+            healed: true,
+            skipped: 1,
+        });
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
 });
 
 it('should serialize overlapping Antigravity live-state operations', async () => {
