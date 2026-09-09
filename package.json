@@ -15,8 +15,8 @@
     },
     "description": "Encrypted local account switcher for Antigravity, Codex, Cline, Kiro, and MiniMax on macOS.",
     "devDependencies": {
-        "@biomejs/biome": "2.5.11",
-        "@types/bun": "1.4.0",
+        "@biomejs/biome": "2.5.12",
+        "@types/bun": "1.4.2",
         "typescript": "7.0.2"
     },
     "engines": {
