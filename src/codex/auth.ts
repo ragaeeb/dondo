@@ -72,22 +72,33 @@ const chatGptTokensValid = (tokens: Record<string, unknown>) => {
     );
 };
 
+const resolvedAuthMode = (value: Record<string, unknown>): CodexAuth['auth_mode'] | null => {
+    if (value.auth_mode === undefined) {
+        if (nonEmptyString(value.OPENAI_API_KEY)) {
+            return 'apikey';
+        }
+        return isRecord(value.tokens) ? 'chatgpt' : null;
+    }
+    return value.auth_mode === 'apikey' || value.auth_mode === 'chatgpt' ? value.auth_mode : null;
+};
+
 export const parseCodexAuth = (text: string): CodexAuth | null => {
     const value = parsedRecord(text);
-    if (!value || !nonEmptyString(value.auth_mode) || !optionalFieldsValid(value)) {
+    const authMode = value ? resolvedAuthMode(value) : null;
+    if (!value || !authMode || !optionalFieldsValid(value)) {
         return null;
     }
-    if (value.auth_mode === 'apikey') {
-        return nonEmptyString(value.OPENAI_API_KEY) ? (value as CodexAuth) : null;
+    if (authMode === 'apikey') {
+        return nonEmptyString(value.OPENAI_API_KEY) ? ({ ...value, auth_mode: authMode } as CodexAuth) : null;
     }
-    if (value.auth_mode !== 'chatgpt' || !isRecord(value.tokens)) {
+    if (!isRecord(value.tokens)) {
         return null;
     }
     const tokens = value.tokens;
     if (!chatGptTokensValid(tokens)) {
         return null;
     }
-    return value as CodexAuth;
+    return { ...value, auth_mode: authMode } as CodexAuth;
 };
 
 export const codexAuthIdentity = (auth: CodexAuth | null) => {

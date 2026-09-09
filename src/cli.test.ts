@@ -1,13 +1,19 @@
 import { expect, it } from 'bun:test';
-import { type CycleCliDependencies, runCli } from './cli.ts';
+import { type CycleCliDependencies, type CyclePlatform, runCli } from './cli.ts';
 import { publicError } from './errors.ts';
 
-const run = async (args: string[], overrides: Partial<CycleCliDependencies> = {}) => {
+const cyclePlatforms: CyclePlatform[] = ['antigravity', 'cline', 'codex', 'kiro', 'minimax'];
+
+const run = async (
+    args: string[],
+    overrides: Partial<Omit<CycleCliDependencies, 'cycle'>> & {
+        cycle?: CycleCliDependencies['cycle'];
+    } = {},
+) => {
     let stdout = '';
     let stderr = '';
     const dependencies: CycleCliDependencies = {
-        cycleKiro: async () => ({ healed: false }),
-        cycleMinimax: async () => ({ healed: false }),
+        cycle: async () => ({ healed: false }),
         writeStderr: (text) => {
             stderr += text;
         },
@@ -26,7 +32,8 @@ it('leaves an empty argument list for the UI server entry point', async () => {
 it('runs the strict positional next contract with safe human output', async () => {
     let minimaxCalls = 0;
     const result = await run(['minimax', 'next'], {
-        cycleMinimax: async () => {
+        cycle: async (platform) => {
+            expect(platform).toBe('minimax');
             minimaxCalls += 1;
             return { healed: false };
         },
@@ -42,8 +49,9 @@ it('runs the strict positional next contract with safe human output', async () =
 
 it('supports machine-readable output without account metadata', async () => {
     const result = await run(['kiro', 'next', '--json'], {
-        cycleKiro: async (onSkip) => {
-            onSkip();
+        cycle: async (platform, onSkip) => {
+            expect(platform).toBe('kiro');
+            onSkip?.();
             return { healed: true };
         },
     });
@@ -67,19 +75,36 @@ it('rejects flags and commands outside the stable contract without invoking a pl
         ['minimax', 'list'],
         ['minimax', 'next', '--json', 'unexpected'],
     ]) {
-        const result = await run(args, { cycleKiro: dependency, cycleMinimax: dependency });
+        const result = await run(args, { cycle: dependency });
         expect(result.exitCode).toBe(2);
         expect(result.stdout).toBe('');
-        expect(result.stderr).toBe('Usage: dondo-donuts <minimax|kiro> next [--json]\n');
+        expect(result.stderr).toBe('Usage: dondo-donuts <antigravity|cline|codex|kiro|minimax> next [--json]\n');
     }
     expect(calls).toBe(0);
+});
+
+it('dispatches the same next contract for every supported platform', async () => {
+    const calls: CyclePlatform[] = [];
+    for (const platform of cyclePlatforms) {
+        const result = await run([platform, 'next'], {
+            cycle: async (calledPlatform) => {
+                calls.push(calledPlatform);
+                return { healed: false };
+            },
+        });
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toBe(
+            `Switched to the next available ${platform === 'antigravity' ? 'Antigravity' : platform === 'cline' ? 'Cline' : platform === 'codex' ? 'Codex' : platform === 'kiro' ? 'Kiro' : 'MiniMax'} account.\n`,
+        );
+    }
+    expect(calls).toEqual(cyclePlatforms);
 });
 
 it('does not expose account labels or unexpected error details', async () => {
     const secretLabel = 'private-account-label';
     const result = await run(['minimax', 'next'], {
-        cycleMinimax: async (onSkip) => {
-            onSkip();
+        cycle: async (_platform, onSkip) => {
+            onSkip?.();
             throw new Error(`${secretLabel}: accessToken=secret-value`);
         },
     });
@@ -95,7 +120,7 @@ it('does not expose account labels or unexpected error details', async () => {
 
 it('preserves safe actionable platform errors such as the Kiro process-closed rule', async () => {
     const result = await run(['kiro', 'next'], {
-        cycleKiro: async () => {
+        cycle: async () => {
             throw publicError(409, 'Quit Kiro completely before cycling accounts.');
         },
     });
@@ -109,8 +134,8 @@ it('preserves safe actionable platform errors such as the Kiro process-closed ru
 
 it('keeps machine-readable failures on stderr when JSON output is requested', async () => {
     const result = await run(['minimax', 'next', '--json'], {
-        cycleMinimax: async (onSkip) => {
-            onSkip();
+        cycle: async (_platform, onSkip) => {
+            onSkip?.();
             throw publicError(409, 'No saved MiniMax account could be loaded');
         },
     });

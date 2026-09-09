@@ -7,6 +7,7 @@ import {
 } from '../account-state.ts';
 import { createAsyncQueue } from '../async-queue.ts';
 import { ANTIGRAVITY_ACCOUNT, ANTIGRAVITY_PROCESS_NAME, ANTIGRAVITY_SERVICE, DEV_MODE, VAULT_PATH } from '../config.ts';
+import { type CycleNextResult, type CycleSkipReporter, cycleNext, isUnavailableAccountError } from '../cycle.ts';
 import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { isProcessRunning } from '../process.ts';
 import { readVaultSection, updateVaultSection } from '../storage/vault.ts';
@@ -163,6 +164,30 @@ const loadAntigravityOperation = async (key: string) => {
 };
 
 export const loadAntigravity = (key: string) => queueAntigravityOperation(() => loadAntigravityOperation(key));
+
+export const cycleNextAntigravity = async (options: { onSkip?: CycleSkipReporter } = {}): Promise<CycleNextResult> =>
+    queueAntigravityOperation(async () => {
+        await assertAntigravityClosed();
+        const section = await readVaultSection('antigravity');
+        const live = await readCurrentSnapshot().catch(() => null);
+        const activeIdentity = await liveIdentity(live).catch(() => null);
+        const activeKey = Object.entries(section.data)
+            .filter(
+                ([, snapshot]) =>
+                    isReadableSnapshot(snapshot) &&
+                    (activeIdentity ? snapshot.identity === activeIdentity : hasSameToken(live, snapshot)),
+            )
+            .map(([key]) => key)
+            .sort((left, right) => left.localeCompare(right, 'en'))[0];
+        return cycleNext({
+            activeKey,
+            candidateKeys: [...Object.keys(section.data), ...Object.keys(section.corruptions ?? {})],
+            isUnavailable: isUnavailableAccountError,
+            load: loadAntigravityOperation,
+            noAvailableMessage: 'No saved Antigravity account could be loaded',
+            onSkip: options.onSkip,
+        });
+    });
 
 export const deleteAntigravity = async (key: string) => {
     const safeKey = assertAccountKey(key);

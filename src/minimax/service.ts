@@ -8,8 +8,8 @@ import {
 } from '../account-state.ts';
 import { createAsyncQueue } from '../async-queue.ts';
 import { MINIMAX_CONFIG_PATH, VAULT_PATH } from '../config.ts';
-import { type CycleNextResult, type CycleSkipReporter, cycleCandidateKeys } from '../cycle.ts';
-import { assertAccountKey, cleanLimitError, isPublicError, publicError } from '../errors.ts';
+import { type CycleNextResult, type CycleSkipReporter, cycleNext, isUnavailableAccountError } from '../cycle.ts';
+import { assertAccountKey, cleanLimitError, publicError } from '../errors.ts';
 import { withPlatformMutationLock } from '../mutation-lock.ts';
 import { readBoundedLocalText, writePrivateFile } from '../storage/file.ts';
 import { readVaultSection, updateVaultSection } from '../storage/vault.ts';
@@ -361,9 +361,7 @@ const cycleMinimaxCandidate = async (key: string) => {
 };
 
 const isUnavailableCycleCandidateError = (error: unknown) =>
-    isMiniMaxCheckInFailureDefinitive(error) ||
-    (isPublicError(error) &&
-        (error.status === 404 || (error.status === 409 && error.message === CORRUPTED_ACCOUNT_ERROR)));
+    isMiniMaxCheckInFailureDefinitive(error) || isUnavailableAccountError(error);
 
 export const cycleNextMinimax = async (options: { onSkip?: CycleSkipReporter } = {}): Promise<CycleNextResult> =>
     queueMiniMaxCycle(() =>
@@ -374,24 +372,14 @@ export const cycleNextMinimax = async (options: { onSkip?: CycleSkipReporter } =
                 .filter(([, snapshot]) => activeIdentity && identity(parseConfig(snapshot.config)) === activeIdentity)
                 .map(([key]) => key)
                 .sort((left, right) => left.localeCompare(right, 'en'))[0];
-            const keys = cycleCandidateKeys(
-                [...Object.keys(section.data), ...Object.keys(section.corruptions ?? {})],
+            return cycleNext({
                 activeKey,
-            );
-            let healed = false;
-            for (const key of keys) {
-                try {
-                    await cycleMinimaxCandidate(key);
-                    return { healed };
-                } catch (error) {
-                    if (!isUnavailableCycleCandidateError(error)) {
-                        throw error;
-                    }
-                    healed = true;
-                    options.onSkip?.();
-                }
-            }
-            throw publicError(409, 'No saved MiniMax account could be loaded');
+                candidateKeys: [...Object.keys(section.data), ...Object.keys(section.corruptions ?? {})],
+                isUnavailable: isUnavailableCycleCandidateError,
+                load: cycleMinimaxCandidate,
+                noAvailableMessage: 'No saved MiniMax account could be loaded',
+                onSkip: options.onSkip,
+            });
         }),
     );
 

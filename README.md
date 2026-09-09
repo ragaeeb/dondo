@@ -35,18 +35,17 @@ bunx dondo-donuts
 Open the URL printed by the server. Dondo starts at `http://127.0.0.1:3000` by default and tries the next available
 port when that port is occupied. It never binds to a non-loopback interface.
 
-To cycle a saved MiniMax or Kiro account without opening the UI, use the CLI:
+To cycle saved accounts without opening the UI, use the same CLI contract for any supported platform:
 
 ```sh
-bunx dondo-donuts minimax next
-bunx dondo-donuts kiro next
+bunx dondo-donuts <platform> next
 ```
 
-Add `--json` for a stable machine-readable result. Cycling uses deterministic saved-account order, wraps after the
-last account, and skips unavailable sessions until one loads. It never accepts an account label and never lists or
-prints saved labels, account identities, indices, or credentials. JSON failures use the stable
-`{ action, code, error, ok, platform }` shape; skipped-account diagnostics are omitted in JSON mode. Kiro must be fully
-quit before cycling.
+`<platform>` is `antigravity`, `cline`, `codex`, `kiro`, or `minimax`. Add `--json` for a stable machine-readable
+result. Cycling uses deterministic saved-account order, wraps after the last account, and skips unavailable sessions
+until one loads. It never accepts an account label and never lists or prints saved labels, account identities, indices,
+or credentials. JSON failures use the stable `{ action, code, error, ok, platform }` shape; skipped-account diagnostics
+are omitted in JSON mode. Antigravity and Kiro must be fully quit before cycling.
 
 ## Using Dondo
 
