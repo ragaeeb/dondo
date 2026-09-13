@@ -66,6 +66,10 @@ export const MINIMAX_CONFIG_PATH =
     join(homedir(), 'Library', 'Application Support', 'MiniMax Agent', 'minimax-agent-config.json');
 export const MINIMAX_PLATFORM_URL = env('MINIMAX_PLATFORM_URL') ?? 'https://platform.minimax.io';
 export const MINIMAX_AGENT_URL = env('MINIMAX_AGENT_URL') ?? 'https://agent.minimax.io';
+export const MINIMAX_DATA_DIR = env('MINIMAX_DATA_DIR') ?? join(HOME_DIR, '.minimax');
+export const MINIMAX_OAUTH_BUILD_ENV = env('MINIMAX_OAUTH_BUILD_ENV') ?? 'prod';
+export const MINIMAX_OAUTH_REGION =
+    env('MINIMAX_OAUTH_REGION') ?? (MINIMAX_AGENT_URL.includes('minimax.cn') ? 'cn' : 'en');
 export const MINIMAX_UUID = env('MINIMAX_UUID');
 export const MINIMAX_LOCAL_STORAGE_PATH =
     env('MINIMAX_LOCAL_STORAGE_PATH') ?? join(dirname(MINIMAX_CONFIG_PATH), 'Local Storage', 'leveldb');

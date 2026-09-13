@@ -740,3 +740,111 @@ it('should check in all unique readable MiniMax accounts with bounded isolated w
         await rm(dir, { force: true, recursive: true });
     }
 });
+
+it('should save and load MiniMax configs that keep tokens in the oauth sidecar', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-minimax-oauth-schema-test-'));
+    const configPath = join(dir, 'minimax-agent-config.json');
+    const dataDir = join(dir, 'minimax-data');
+    const vaultPath = join(dir, 'vault.json');
+    const script = `
+        const { createHash } = await import('node:crypto');
+        const { mkdir } = await import('node:fs/promises');
+        const { join } = await import('node:path');
+        const authHome = join(process.env.MINIMAX_DATA_DIR, 'auth');
+        const oauthDir = join(authHome, 'prod', 'en', 'mcode-public');
+        const recordKey = 'com.minimax.mcode.oauth.prod.en\\0' +
+            createHash('sha256').update(authHome + '\\0mcode-public').digest('base64url');
+        await mkdir(oauthDir, { recursive: true, mode: 0o700 });
+        await Bun.write(process.env.MINIMAX_CONFIG_PATH, JSON.stringify({
+            sharedUser: { realUserID: '482492791036829701', userID: 'oauth-user' },
+            tokens: {},
+            user: {},
+        }));
+        await Bun.write(join(oauthDir, 'auth.json'), JSON.stringify({
+            records: {
+                [recordKey]: {
+                    accessToken: 'opaque-oauth-token',
+                    audience: 'agent-backend',
+                    clientId: 'mcode-public',
+                    expiresAtMs: 1_800_000_000_000,
+                    generation: 1,
+                    loginEpoch: 'epoch-1',
+                    refreshToken: 'opaque-refresh',
+                    schemaVersion: 1,
+                    scopes: ['agent.default'],
+                    tokenType: 'Bearer',
+                },
+            },
+            schemaVersion: 1,
+        }));
+        const server = Bun.serve({
+            port: 0,
+            fetch() {
+                return Response.json({
+                    base_resp: { status_code: 0 },
+                    data: {
+                        days: Array.from({ length: 7 }, (_, index) => ({
+                            day_no: index + 1, is_today: index === 0, points: 100, status: 3,
+                        })),
+                        scene: 2,
+                        userInfo: { realUserID: '482492791036829701' },
+                    },
+                });
+            },
+        });
+        process.env.MINIMAX_AGENT_URL = 'http://127.0.0.1:' + server.port;
+        process.env.MINIMAX_PLATFORM_URL = 'http://127.0.0.1:' + server.port;
+        const { loadMinimax, minimaxState, saveMinimax } = await import('./src/minimax/service.ts');
+        const { readVaultSection } = await import('./src/storage/vault.ts');
+        try {
+            await saveMinimax('saved');
+            await Bun.write(join(oauthDir, 'auth.json'), JSON.stringify({ records: {}, schemaVersion: 1 }));
+            await loadMinimax('saved');
+            const saved = JSON.parse((await readVaultSection('minimax')).data.saved.config);
+            const live = JSON.parse(await Bun.file(process.env.MINIMAX_CONFIG_PATH).text());
+            const oauth = JSON.parse(await Bun.file(join(oauthDir, 'auth.json')).text());
+            const state = await minimaxState();
+            console.log(JSON.stringify({
+                active: state.entries[0]?.active ?? false,
+                corrupted: state.entries[0]?.corrupted ?? false,
+                liveHasToken: Boolean(live.tokens.accessToken),
+                oauthRestored: Object.values(oauth.records ?? {}).some((record) => record.refreshToken === 'opaque-refresh'),
+                savedHasRefresh: Boolean(saved.tokens.refreshToken),
+            }));
+        } finally {
+            server.stop(true);
+        }
+    `;
+    try {
+        const proc = Bun.spawn([process.execPath, '--eval', script], {
+            cwd: process.cwd(),
+            env: {
+                ...process.env,
+                DONDO_VAULT: vaultPath,
+                MINIMAX_CONFIG_PATH: configPath,
+                MINIMAX_DATA_DIR: dataDir,
+                MINIMAX_UUID: '00000000-0000-4000-8000-000000000000',
+            },
+            stderr: 'pipe',
+            stdout: 'pipe',
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+            proc.exited,
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+        ]);
+        if (exitCode !== 0) {
+            throw new Error(stderr);
+        }
+        expect(JSON.parse(stdout)).toEqual({
+            active: true,
+            corrupted: false,
+            liveHasToken: true,
+            oauthRestored: true,
+            savedHasRefresh: true,
+        });
+        expect(stdout).not.toContain('opaque-oauth-token');
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});

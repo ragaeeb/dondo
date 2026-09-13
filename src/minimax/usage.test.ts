@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
     checkInMiniMax,
     fetchMiniMaxLimits,
+    mergeMiniMaxOAuthIntoConfig,
     parseMiniMaxConfig,
     scanMiniMaxUniqueUserId,
     usageToLimitResult,
@@ -165,8 +166,52 @@ it('rejects invalid or incomplete MiniMax config JSON', () => {
         expect(parseMiniMaxConfig(JSON.stringify({ tokens: { accessToken: malformedToken } }))).toBeNull();
     }
     expect(parseMiniMaxConfig(JSON.stringify({ tokens: { accessToken, refreshToken: 123 } }))).toBeNull();
-    expect(parseMiniMaxConfig(JSON.stringify({ tokens: { accessToken, refreshToken: 'legacy' } }))).toBeNull();
+    expect(parseMiniMaxConfig(JSON.stringify({ tokens: { accessToken, refreshToken: 'legacy' } }))).not.toBeNull();
     expect(parseMiniMaxConfig(JSON.stringify({ tokens: { accessToken } }))).not.toBeNull();
+    expect(
+        parseMiniMaxConfig(
+            JSON.stringify({
+                config: { language: 'en' },
+                localStorageConfig: {},
+                sharedUser: { realUserID: '482492791036829701', userID: 'egKjVQKo46y6' },
+                tokens: { accessToken: 'opaque-oauth-token', refreshToken: 'opaque-refresh' },
+                user: {},
+            }),
+        ),
+    ).not.toBeNull();
+    expect(
+        parseMiniMaxConfig(
+            JSON.stringify({
+                sharedUser: { userID: 'egKjVQKo46y6' },
+                tokens: {},
+            }),
+        ),
+    ).toBeNull();
+});
+
+it('merges MiniMax oauth sidecar tokens into the desktop config shape', () => {
+    const merged = mergeMiniMaxOAuthIntoConfig(
+        JSON.stringify({
+            sharedUser: { realUserID: '482492791036829701', userID: 'egKjVQKo46y6' },
+            tokens: {},
+            user: {},
+        }),
+        {
+            accessToken: 'opaque-oauth-token',
+            expiresAtMs: 1_800_000_000_000,
+            generation: 1,
+            loginEpoch: 'epoch-1',
+            refreshToken: 'opaque-refresh',
+            tokenType: 'Bearer',
+        },
+    );
+    expect(parseMiniMaxConfig(merged)).toMatchObject({
+        sharedUser: { userID: 'egKjVQKo46y6' },
+        tokens: {
+            accessToken: 'opaque-oauth-token',
+            refreshToken: 'opaque-refresh',
+        },
+    });
 });
 
 it('omits non-finite MiniMax quota values', () => {

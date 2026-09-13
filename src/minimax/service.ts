@@ -17,13 +17,17 @@ import type { LimitResult, MinimaxSnapshot, MinimaxVault } from '../types.ts';
 import {
     checkInMiniMax,
     fetchMiniMaxLimits,
+    hydrateMiniMaxConfig,
     isMiniMaxCheckInFailureDefinitive,
     isMiniMaxCheckInFailureTolerable,
     type MiniMaxCheckInResult,
     type MiniMaxConfig,
-    miniMaxTokenIdentity,
+    miniMaxConfigIdentity,
     parseMiniMaxConfig,
+    readMiniMaxOAuthSidecar,
     resolveMiniMaxRealUserId,
+    restoreMiniMaxOAuthSidecar,
+    writeMiniMaxOAuthSidecar,
 } from './usage.ts';
 
 type MiniMaxLimitUpdate = {
@@ -53,14 +57,15 @@ type MiniMaxCheckInUpdate = {
 const queueMiniMaxCycle = createAsyncQueue();
 
 const liveConfig = async () => {
-    return (await readBoundedLocalText(MINIMAX_CONFIG_PATH)) ?? '';
+    const text = (await readBoundedLocalText(MINIMAX_CONFIG_PATH)) ?? '';
+    return text ? await hydrateMiniMaxConfig(text) : '';
 };
 
 const parseConfig = (config: string) => {
     return parseMiniMaxConfig(config);
 };
 
-const identity = (config: MiniMaxConfig | null) => (config ? miniMaxTokenIdentity(config.tokens.accessToken) : '');
+const identity = (config: MiniMaxConfig | null) => (config ? miniMaxConfigIdentity(config) : '');
 
 const isSameConfig = (a: MiniMaxConfig | null, b: MiniMaxConfig | null) => {
     const aIdentity = identity(a);
@@ -146,7 +151,8 @@ const saveMinimaxMutation = async (key: string) => {
     if (!config.trim()) {
         throw publicError(400, `${MINIMAX_CONFIG_PATH} is empty`);
     }
-    const parsedConfig = parseConfig(config);
+    const hydrated = await hydrateMiniMaxConfig(config);
+    const parsedConfig = parseConfig(hydrated);
     if (!parsedConfig) {
         throw publicError(400, `${MINIMAX_CONFIG_PATH} is not valid MiniMax config JSON`);
     }
@@ -159,7 +165,7 @@ const saveMinimaxMutation = async (key: string) => {
         }
         const now = new Date().toISOString();
         section.data[safeKey] = {
-            config,
+            config: hydrated,
             createdAt: existing?.createdAt ?? now,
             ...(resolvedRealUserId
                 ? { realUserId: resolvedRealUserId }
@@ -299,7 +305,11 @@ const persistMinimaxCandidate = async ({ config, key, snapshot }: MiniMaxCandida
         return { result: section, write: identityChanged || limitsChanged };
     });
     const previousLiveConfig = await readBoundedLocalText(MINIMAX_CONFIG_PATH);
+    const hasOAuthTokens = Boolean(config.tokens.refreshToken?.trim());
+    const previousOAuth = hasOAuthTokens ? await readMiniMaxOAuthSidecar() : { credential: null, state: null };
+    let wroteOAuth = false;
     try {
+        wroteOAuth = hasOAuthTokens ? await writeMiniMaxOAuthSidecar(config) : false;
         await writePrivateFile(MINIMAX_CONFIG_PATH, snapshot.config);
     } catch (error) {
         let rollbackFailed = false;
@@ -311,6 +321,13 @@ const persistMinimaxCandidate = async ({ config, key, snapshot }: MiniMaxCandida
             }
         } catch {
             rollbackFailed = true;
+        }
+        if (wroteOAuth) {
+            try {
+                await restoreMiniMaxOAuthSidecar(previousOAuth);
+            } catch {
+                rollbackFailed = true;
+            }
         }
         try {
             await rollbackMinimaxVault(before, persisted, tokenIdentity);
