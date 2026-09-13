@@ -70,6 +70,9 @@ export const MINIMAX_DATA_DIR = env('MINIMAX_DATA_DIR') ?? join(HOME_DIR, '.mini
 export const MINIMAX_OAUTH_BUILD_ENV = env('MINIMAX_OAUTH_BUILD_ENV') ?? 'prod';
 export const MINIMAX_OAUTH_REGION =
     env('MINIMAX_OAUTH_REGION') ?? (MINIMAX_AGENT_URL.includes('minimax.cn') ? 'cn' : 'en');
+export const MINIMAX_OAUTH_TOKEN_URL =
+    env('MINIMAX_OAUTH_TOKEN_URL') ??
+    `https://account.minimax.${MINIMAX_OAUTH_REGION === 'cn' ? 'cn' : 'io'}/oauth2/token`;
 export const MINIMAX_UUID = env('MINIMAX_UUID');
 export const MINIMAX_LOCAL_STORAGE_PATH =
     env('MINIMAX_LOCAL_STORAGE_PATH') ?? join(dirname(MINIMAX_CONFIG_PATH), 'Local Storage', 'leveldb');

@@ -741,7 +741,7 @@ it('should check in all unique readable MiniMax accounts with bounded isolated w
     }
 });
 
-it('should save and load MiniMax configs that keep tokens in the oauth sidecar', async () => {
+it('should sync authoritative OAuth tokens and persist rotations even when check-in fails', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dondo-minimax-oauth-schema-test-'));
     const configPath = join(dir, 'minimax-agent-config.json');
     const dataDir = join(dir, 'minimax-data');
@@ -757,7 +757,7 @@ it('should save and load MiniMax configs that keep tokens in the oauth sidecar',
         await mkdir(oauthDir, { recursive: true, mode: 0o700 });
         await Bun.write(process.env.MINIMAX_CONFIG_PATH, JSON.stringify({
             sharedUser: { realUserID: '482492791036829701', userID: 'oauth-user' },
-            tokens: {},
+            tokens: { accessToken: 'stale-token', refreshToken: 'stale-refresh', tokenType: 'Bearer' },
             user: {},
         }));
         await Bun.write(join(oauthDir, 'auth.json'), JSON.stringify({
@@ -777,11 +777,32 @@ it('should save and load MiniMax configs that keep tokens in the oauth sidecar',
             },
             schemaVersion: 1,
         }));
+        let acceptedToken = 'opaque-oauth-token';
+        let refreshes = 0;
+        let failCheckIn = false;
         const server = Bun.serve({
             port: 0,
-            fetch() {
+            async fetch(request) {
+                if (new URL(request.url).pathname === '/oauth2/token') {
+                    const body = await request.formData();
+                    if (body.get('grant_type') !== 'refresh_token' || body.get('client_id') !== 'mcode-public' ||
+                        body.get('refresh_token') !== (refreshes ? 'rotated-refresh-' + refreshes : 'opaque-refresh')) {
+                        return Response.json({ error: 'invalid_grant' }, { status: 400 });
+                    }
+                    refreshes += 1;
+                    acceptedToken = 'rotated-access-' + refreshes;
+                    return Response.json({ access_token: acceptedToken, refresh_token: 'rotated-refresh-' + refreshes,
+                        token_type: 'Bearer', scope: 'agent.default', expires_in: 3600 });
+                }
+                if (request.headers.get('Authorization') !== 'Bearer ' + acceptedToken) {
+                    return new Response(null, { status: 401 });
+                }
+                if (failCheckIn && new URL(request.url).pathname.endsWith('/signin/status')) {
+                    return new Response(null, { status: 503 });
+                }
                 return Response.json({
                     base_resp: { status_code: 0 },
+                    workspaces: [{ selected: true, has_token_plan: false }],
                     data: {
                         days: Array.from({ length: 7 }, (_, index) => ({
                             day_no: index + 1, is_today: index === 0, points: 100, status: 3,
@@ -794,11 +815,24 @@ it('should save and load MiniMax configs that keep tokens in the oauth sidecar',
         });
         process.env.MINIMAX_AGENT_URL = 'http://127.0.0.1:' + server.port;
         process.env.MINIMAX_PLATFORM_URL = 'http://127.0.0.1:' + server.port;
-        const { loadMinimax, minimaxState, saveMinimax } = await import('./src/minimax/service.ts');
-        const { readVaultSection } = await import('./src/storage/vault.ts');
+        process.env.MINIMAX_OAUTH_TOKEN_URL = 'http://127.0.0.1:' + server.port + '/oauth2/token';
+        const { checkInAllMinimax, loadMinimax, minimaxState, saveMinimax } = await import('./src/minimax/service.ts');
+        const { readVaultSection, updateVaultSection } = await import('./src/storage/vault.ts');
+        const expireSaved = () => updateVaultSection('minimax', (section) => {
+            const config = JSON.parse(section.data.saved.config);
+            config.tokens.expiresAtMs = '0';
+            section.data.saved.config = JSON.stringify(config);
+            return { result: undefined };
+        });
         try {
             await saveMinimax('saved');
             await Bun.write(join(oauthDir, 'auth.json'), JSON.stringify({ records: {}, schemaVersion: 1 }));
+            await expireSaved();
+            failCheckIn = true;
+            let loadErrorStatus;
+            try { await loadMinimax('saved'); } catch (error) { loadErrorStatus = error.status; }
+            const rotationSurvived = JSON.parse((await readVaultSection('minimax')).data.saved.config).tokens.refreshToken === 'rotated-refresh-1';
+            failCheckIn = false;
             await loadMinimax('saved');
             const saved = JSON.parse((await readVaultSection('minimax')).data.saved.config);
             const live = JSON.parse(await Bun.file(process.env.MINIMAX_CONFIG_PATH).text());
@@ -808,9 +842,20 @@ it('should save and load MiniMax configs that keep tokens in the oauth sidecar',
                 active: state.entries[0]?.active ?? false,
                 corrupted: state.entries[0]?.corrupted ?? false,
                 liveHasToken: Boolean(live.tokens.accessToken),
-                oauthRestored: Object.values(oauth.records ?? {}).some((record) => record.refreshToken === 'opaque-refresh'),
+                oauthRestored: Object.values(oauth.records ?? {}).some((record) => record.refreshToken === 'rotated-refresh-1'),
+                loadErrorStatus,
+                rotationSurvived,
                 savedHasRefresh: Boolean(saved.tokens.refreshToken),
             }));
+            await Bun.write(join(oauthDir, 'auth.json'), JSON.stringify({ records: {}, schemaVersion: 1 }));
+            await expireSaved();
+            const checked = await checkInAllMinimax();
+            if (checked.alreadyClaimed !== 1 || refreshes !== 2) throw new Error('Bulk check-in did not refresh');
+            await expireSaved();
+            await Bun.write(join(oauthDir, 'auth.json'), JSON.stringify({ records: {}, schemaVersion: 1 }));
+            const usage = await minimaxState({ refreshLimits: true });
+            if (refreshes !== 3) throw new Error('Usage did not refresh');
+            if (!usage.entries[0]?.quota?.ok) throw new Error('Refreshed usage was not cached');
         } finally {
             server.stop(true);
         }
@@ -840,7 +885,9 @@ it('should save and load MiniMax configs that keep tokens in the oauth sidecar',
             active: true,
             corrupted: false,
             liveHasToken: true,
+            loadErrorStatus: 502,
             oauthRestored: true,
+            rotationSurvived: true,
             savedHasRefresh: true,
         });
         expect(stdout).not.toContain('opaque-oauth-token');

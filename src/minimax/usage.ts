@@ -8,9 +8,11 @@ import {
     MINIMAX_LOCAL_STORAGE_PATH,
     MINIMAX_OAUTH_BUILD_ENV,
     MINIMAX_OAUTH_REGION,
+    MINIMAX_OAUTH_TOKEN_URL,
     MINIMAX_PLATFORM_URL,
     MINIMAX_UUID,
 } from '../config.ts';
+import { publicError } from '../errors.ts';
 import { discardResponse, readBoundedResponseJson } from '../http.ts';
 import { decodeJwtPayload } from '../jwt.ts';
 import { readBoundedLocalText, writePrivateFile } from '../storage/file.ts';
@@ -122,8 +124,9 @@ const miniMaxCheckInFailure = (
     kind: MiniMaxCheckInFailureKind,
     responseRejected = false,
 ): MiniMaxCheckInFailure => {
-    const error = new Error(message) as MiniMaxCheckInFailure;
-    Object.defineProperty(error, CHECK_IN_FAILURE_KIND, { value: kind });
+    const error = Object.assign(publicError(kind === 'definitive' ? 401 : 502, message), {
+        [CHECK_IN_FAILURE_KIND]: kind,
+    });
     if (responseRejected) {
         Object.defineProperty(error, CHECK_IN_RESPONSE_REJECTION, { value: true });
     }
@@ -319,11 +322,82 @@ export const mergeMiniMaxOAuthIntoConfig = (text: string, oauth: MiniMaxOAuthCre
 };
 
 export const hydrateMiniMaxConfig = async (text: string): Promise<string> => {
-    if (parseMiniMaxConfig(text)) {
+    const config = parseMiniMaxConfig(text);
+    if (config && config.tokens.tokenType !== MCODE_OAUTH_TOKEN_TYPE) {
         return text;
     }
     const oauth = await readMiniMaxOAuthCredential();
     return oauth ? mergeMiniMaxOAuthIntoConfig(text, oauth) : text;
+};
+
+export const refreshMiniMaxConfig = async (config: MiniMaxConfig): Promise<MiniMaxConfig> => {
+    if (config.tokens.tokenType !== MCODE_OAUTH_TOKEN_TYPE || !config.tokens.refreshToken) {
+        return config;
+    }
+    const oauth = await readMiniMaxOAuthCredential();
+    if (
+        oauth &&
+        config.tokens.loginEpoch &&
+        oauth.loginEpoch === config.tokens.loginEpoch &&
+        oauth.generation >= Number(config.tokens.generation)
+    ) {
+        config = JSON.parse(mergeMiniMaxOAuthIntoConfig(JSON.stringify(config), oauth)) as MiniMaxConfig;
+    }
+    if (Number(config.tokens.expiresAtMs) > Date.now() + 30_000) {
+        return config;
+    }
+    const response = await fetch(MINIMAX_OAUTH_TOKEN_URL, {
+        body: new URLSearchParams({
+            audience: MCODE_OAUTH_AUDIENCE,
+            client_id: MCODE_OAUTH_CLIENT_ID,
+            grant_type: 'refresh_token',
+            refresh_token: config.tokens.refreshToken as string,
+            scope: MCODE_OAUTH_SCOPES.join(' '),
+        }),
+        headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+        method: 'POST',
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    }).catch(() => {
+        throw publicError(502, 'MiniMax token refresh request failed. Try again.');
+    });
+    const payload = await readBoundedResponseJson<unknown>(response, 'MiniMax token refresh').catch(() => null);
+    if (!response.ok || !isRecord(payload) || payload.error) {
+        throw publicError(
+            response.status === 400 || response.status === 401 ? 401 : 502,
+            'MiniMax session could not be refreshed. Sign into MiniMax and sync this account again.',
+        );
+    }
+    return refreshedMiniMaxConfig(config, payload);
+};
+
+const refreshedMiniMaxConfig = (config: MiniMaxConfig, payload: Record<string, unknown>): MiniMaxConfig => {
+    const scopes = typeof payload.scope === 'string' ? payload.scope.split(/\s+/u) : payload.scope;
+    const refreshToken = payload.refresh_token ?? config.tokens.refreshToken;
+    if (
+        typeof payload.access_token !== 'string' ||
+        !payload.access_token.trim() ||
+        typeof refreshToken !== 'string' ||
+        !refreshToken.trim() ||
+        typeof payload.token_type !== 'string' ||
+        payload.token_type.toLowerCase() !== 'bearer' ||
+        typeof payload.expires_in !== 'number' ||
+        !Number.isFinite(payload.expires_in) ||
+        payload.expires_in <= 0 ||
+        !Array.isArray(scopes) ||
+        !scopes.includes('agent.default')
+    ) {
+        throw publicError(502, 'MiniMax token refresh returned an invalid credential');
+    }
+    return JSON.parse(
+        mergeMiniMaxOAuthIntoConfig(JSON.stringify(config), {
+            accessToken: payload.access_token,
+            expiresAtMs: Date.now() + payload.expires_in * 1_000,
+            generation: (Number(config.tokens.generation) || 0) + 1,
+            refreshToken,
+            tokenType: MCODE_OAUTH_TOKEN_TYPE,
+            ...(config.tokens.loginEpoch ? { loginEpoch: config.tokens.loginEpoch } : {}),
+        }),
+    ) as MiniMaxConfig;
 };
 
 const oauthCredentialFromConfig = (config: MiniMaxConfig): MiniMaxOAuthCredential | null => {
@@ -1005,7 +1079,7 @@ export const checkInMiniMax = async (
         if (isMiniMaxCheckInFailure(error)) {
             throw error;
         }
-        throw miniMaxCheckInFailure(error instanceof Error ? error.message : 'MiniMax check-in failed', 'transient');
+        throw miniMaxCheckInFailure('MiniMax check-in request failed. Try again.', 'transient');
     }) as MiniMaxCheckInPending;
     checkInPromises.set(tokenIdentity, pending);
     try {
