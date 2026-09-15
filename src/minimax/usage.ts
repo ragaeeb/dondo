@@ -383,8 +383,7 @@ const refreshedMiniMaxConfig = (config: MiniMaxConfig, payload: Record<string, u
         typeof payload.expires_in !== 'number' ||
         !Number.isFinite(payload.expires_in) ||
         payload.expires_in <= 0 ||
-        !Array.isArray(scopes) ||
-        !scopes.includes('agent.default')
+        (scopes !== undefined && (!Array.isArray(scopes) || !scopes.includes('agent.default')))
     ) {
         throw publicError(502, 'MiniMax token refresh returned an invalid credential');
     }
@@ -409,7 +408,7 @@ const oauthCredentialFromConfig = (config: MiniMaxConfig): MiniMaxOAuthCredentia
     const generation = Number(config.tokens.generation);
     return {
         accessToken: config.tokens.accessToken,
-        expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : Date.now() + 39 * 24 * 60 * 60 * 1_000,
+        expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : Date.now() - 1,
         generation: Number.isSafeInteger(generation) && generation >= 0 ? generation : 1,
         refreshToken,
         tokenType: MCODE_OAUTH_TOKEN_TYPE,

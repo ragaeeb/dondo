@@ -346,7 +346,10 @@ const persistMinimaxCandidate = async ({ config, key, snapshot }: MiniMaxCandida
     const previousOAuth = hasOAuthTokens ? await readMiniMaxOAuthSidecar() : { credential: null, state: null };
     let wroteOAuth = false;
     try {
-        wroteOAuth = hasOAuthTokens ? await writeMiniMaxOAuthSidecar(config) : false;
+        if (hasOAuthTokens) {
+            wroteOAuth = true;
+            await writeMiniMaxOAuthSidecar(config);
+        }
         await writePrivateFile(MINIMAX_CONFIG_PATH, snapshot.config);
     } catch (error) {
         let rollbackFailed = false;
