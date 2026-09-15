@@ -740,3 +740,158 @@ it('should check in all unique readable MiniMax accounts with bounded isolated w
         await rm(dir, { force: true, recursive: true });
     }
 });
+
+it('should sync authoritative OAuth tokens and persist rotations even when check-in fails', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-minimax-oauth-schema-test-'));
+    const configPath = join(dir, 'minimax-agent-config.json');
+    const dataDir = join(dir, 'minimax-data');
+    const vaultPath = join(dir, 'vault.json');
+    const script = `
+        const { createHash } = await import('node:crypto');
+        const { mkdir } = await import('node:fs/promises');
+        const { join } = await import('node:path');
+        const authHome = join(process.env.MINIMAX_DATA_DIR, 'auth');
+        const oauthDir = join(authHome, 'prod', 'en', 'mcode-public');
+        const recordKey = 'com.minimax.mcode.oauth.prod.en\\0' +
+            createHash('sha256').update(authHome + '\\0mcode-public').digest('base64url');
+        await mkdir(oauthDir, { recursive: true, mode: 0o700 });
+        await Bun.write(process.env.MINIMAX_CONFIG_PATH, JSON.stringify({
+            sharedUser: { realUserID: '482492791036829701', userID: 'oauth-user' },
+            tokens: { accessToken: 'stale-token', refreshToken: 'stale-refresh', tokenType: 'Bearer' },
+            user: {},
+        }));
+        await Bun.write(join(oauthDir, 'auth.json'), JSON.stringify({
+            records: {
+                [recordKey]: {
+                    accessToken: 'opaque-oauth-token',
+                    audience: 'agent-backend',
+                    clientId: 'mcode-public',
+                    expiresAtMs: 1_800_000_000_000,
+                    generation: 1,
+                    loginEpoch: 'epoch-1',
+                    refreshToken: 'opaque-refresh',
+                    schemaVersion: 1,
+                    scopes: ['agent.default'],
+                    tokenType: 'Bearer',
+                },
+            },
+            schemaVersion: 1,
+        }));
+        let acceptedToken = 'opaque-oauth-token';
+        let refreshes = 0;
+        let failCheckIn = false;
+        const server = Bun.serve({
+            port: 0,
+            async fetch(request) {
+                if (new URL(request.url).pathname === '/oauth2/token') {
+                    const body = await request.formData();
+                    if (body.get('grant_type') !== 'refresh_token' || body.get('client_id') !== 'mcode-public' ||
+                        body.get('refresh_token') !== (refreshes ? 'rotated-refresh-' + refreshes : 'opaque-refresh')) {
+                        return Response.json({ error: 'invalid_grant' }, { status: 400 });
+                    }
+                    refreshes += 1;
+                    acceptedToken = 'rotated-access-' + refreshes;
+                    return Response.json({ access_token: acceptedToken, refresh_token: 'rotated-refresh-' + refreshes,
+                        token_type: 'Bearer', scope: 'agent.default', expires_in: 3600 });
+                }
+                if (request.headers.get('Authorization') !== 'Bearer ' + acceptedToken) {
+                    return new Response(null, { status: 401 });
+                }
+                if (failCheckIn && new URL(request.url).pathname.endsWith('/signin/status')) {
+                    return new Response(null, { status: 503 });
+                }
+                return Response.json({
+                    base_resp: { status_code: 0 },
+                    workspaces: [{ selected: true, has_token_plan: false }],
+                    data: {
+                        days: Array.from({ length: 7 }, (_, index) => ({
+                            day_no: index + 1, is_today: index === 0, points: 100, status: 3,
+                        })),
+                        scene: 2,
+                        userInfo: { realUserID: '482492791036829701' },
+                    },
+                });
+            },
+        });
+        process.env.MINIMAX_AGENT_URL = 'http://127.0.0.1:' + server.port;
+        process.env.MINIMAX_PLATFORM_URL = 'http://127.0.0.1:' + server.port;
+        process.env.MINIMAX_OAUTH_TOKEN_URL = 'http://127.0.0.1:' + server.port + '/oauth2/token';
+        const { checkInAllMinimax, loadMinimax, minimaxState, saveMinimax } = await import('./src/minimax/service.ts');
+        const { readVaultSection, updateVaultSection } = await import('./src/storage/vault.ts');
+        const expireSaved = () => updateVaultSection('minimax', (section) => {
+            const config = JSON.parse(section.data.saved.config);
+            config.tokens.expiresAtMs = '0';
+            section.data.saved.config = JSON.stringify(config);
+            return { result: undefined };
+        });
+        try {
+            await saveMinimax('saved');
+            await Bun.write(join(oauthDir, 'auth.json'), JSON.stringify({ records: {}, schemaVersion: 1 }));
+            await expireSaved();
+            failCheckIn = true;
+            let loadErrorStatus;
+            try { await loadMinimax('saved'); } catch (error) { loadErrorStatus = error.status; }
+            const rotationSurvived = JSON.parse((await readVaultSection('minimax')).data.saved.config).tokens.refreshToken === 'rotated-refresh-1';
+            failCheckIn = false;
+            await loadMinimax('saved');
+            const saved = JSON.parse((await readVaultSection('minimax')).data.saved.config);
+            const live = JSON.parse(await Bun.file(process.env.MINIMAX_CONFIG_PATH).text());
+            const oauth = JSON.parse(await Bun.file(join(oauthDir, 'auth.json')).text());
+            const state = await minimaxState();
+            console.log(JSON.stringify({
+                active: state.entries[0]?.active ?? false,
+                corrupted: state.entries[0]?.corrupted ?? false,
+                liveHasToken: Boolean(live.tokens.accessToken),
+                oauthRestored: Object.values(oauth.records ?? {}).some((record) => record.refreshToken === 'rotated-refresh-1'),
+                loadErrorStatus,
+                rotationSurvived,
+                savedHasRefresh: Boolean(saved.tokens.refreshToken),
+            }));
+            await Bun.write(join(oauthDir, 'auth.json'), JSON.stringify({ records: {}, schemaVersion: 1 }));
+            await expireSaved();
+            const checked = await checkInAllMinimax();
+            if (checked.alreadyClaimed !== 1 || refreshes !== 2) throw new Error('Bulk check-in did not refresh');
+            await expireSaved();
+            await Bun.write(join(oauthDir, 'auth.json'), JSON.stringify({ records: {}, schemaVersion: 1 }));
+            const usage = await minimaxState({ refreshLimits: true });
+            if (refreshes !== 3) throw new Error('Usage did not refresh');
+            if (!usage.entries[0]?.quota?.ok) throw new Error('Refreshed usage was not cached');
+        } finally {
+            server.stop(true);
+        }
+    `;
+    try {
+        const proc = Bun.spawn([process.execPath, '--eval', script], {
+            cwd: process.cwd(),
+            env: {
+                ...process.env,
+                DONDO_VAULT: vaultPath,
+                MINIMAX_CONFIG_PATH: configPath,
+                MINIMAX_DATA_DIR: dataDir,
+                MINIMAX_UUID: '00000000-0000-4000-8000-000000000000',
+            },
+            stderr: 'pipe',
+            stdout: 'pipe',
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+            proc.exited,
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+        ]);
+        if (exitCode !== 0) {
+            throw new Error(stderr);
+        }
+        expect(JSON.parse(stdout)).toEqual({
+            active: true,
+            corrupted: false,
+            liveHasToken: true,
+            loadErrorStatus: 502,
+            oauthRestored: true,
+            rotationSurvived: true,
+            savedHasRefresh: true,
+        });
+        expect(stdout).not.toContain('opaque-oauth-token');
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});

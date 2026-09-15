@@ -37,6 +37,7 @@ export const prepareDevEnvironment = async (mode: DevMode): Promise<PreparedDevE
             KIRO_AUTH_PATH: join(root, 'kiro', 'kiro-auth-token.json'),
             KIRO_PROFILE_PATH: join(root, 'kiro', 'profile.json'),
             MINIMAX_CONFIG_PATH: join(root, 'minimax', 'minimax-agent-config.json'),
+            MINIMAX_DATA_DIR: join(root, 'minimax-data'),
             MINIMAX_LOCAL_STORAGE_PATH: join(root, 'minimax', 'Local Storage', 'leveldb'),
         },
         root,

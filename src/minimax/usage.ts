@@ -1,15 +1,40 @@
 import { createHash } from 'node:crypto';
-import { readdir } from 'node:fs/promises';
+import { chmod, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { MINIMAX_AGENT_URL, MINIMAX_LOCAL_STORAGE_PATH, MINIMAX_PLATFORM_URL, MINIMAX_UUID } from '../config.ts';
+import {
+    MINIMAX_AGENT_URL,
+    MINIMAX_DATA_DIR,
+    MINIMAX_LOCAL_STORAGE_PATH,
+    MINIMAX_OAUTH_BUILD_ENV,
+    MINIMAX_OAUTH_REGION,
+    MINIMAX_OAUTH_TOKEN_URL,
+    MINIMAX_PLATFORM_URL,
+    MINIMAX_UUID,
+} from '../config.ts';
+import { publicError } from '../errors.ts';
 import { discardResponse, readBoundedResponseJson } from '../http.ts';
 import { decodeJwtPayload } from '../jwt.ts';
+import { readBoundedLocalText, writePrivateFile } from '../storage/file.ts';
 import type { LimitResult, ModelLimit } from '../types.ts';
+
+export type MiniMaxTokens = {
+    accessToken: string;
+    expiresAtMs?: string;
+    generation?: string;
+    loginEpoch?: string;
+    refreshToken?: string;
+    tokenType?: string;
+};
 
 export type MiniMaxConfig = {
     [key: string]: unknown;
-    tokens: { accessToken: string };
+    tokens: MiniMaxTokens;
+};
+
+export type MiniMaxOAuthSidecar = {
+    credential: string | null;
+    state: string | null;
 };
 
 type Workspace = {
@@ -99,8 +124,9 @@ const miniMaxCheckInFailure = (
     kind: MiniMaxCheckInFailureKind,
     responseRejected = false,
 ): MiniMaxCheckInFailure => {
-    const error = new Error(message) as MiniMaxCheckInFailure;
-    Object.defineProperty(error, CHECK_IN_FAILURE_KIND, { value: kind });
+    const error = Object.assign(publicError(kind === 'definitive' ? 401 : 502, message), {
+        [CHECK_IN_FAILURE_KIND]: kind,
+    });
     if (responseRejected) {
         Object.defineProperty(error, CHECK_IN_RESPONSE_REJECTION, { value: true });
     }
@@ -142,6 +168,20 @@ export const miniMaxTokenIdentity = (accessToken: string) => {
     return typeof identity === 'string' && identity ? identity : '';
 };
 
+const profileIdentity = (value: Record<string, unknown>) => {
+    const sharedUser = isRecord(value.sharedUser) ? value.sharedUser : {};
+    const user = isRecord(value.user) ? value.user : {};
+    for (const candidate of [sharedUser.userID, user.userID, sharedUser.realUserID, user.realUserID]) {
+        if (typeof candidate === 'string' && candidate.trim()) {
+            return candidate.trim();
+        }
+    }
+    return '';
+};
+
+export const miniMaxConfigIdentity = (config: MiniMaxConfig) =>
+    miniMaxTokenIdentity(config.tokens.accessToken) || profileIdentity(config);
+
 export const parseMiniMaxConfig = (text: string): MiniMaxConfig | null => {
     let value: unknown;
     try {
@@ -152,22 +192,303 @@ export const parseMiniMaxConfig = (text: string): MiniMaxConfig | null => {
     if (!isRecord(value) || !isRecord(value.tokens)) {
         return null;
     }
-    for (const [key, tokenValue] of Object.entries(value.tokens)) {
-        if (key !== 'accessToken' || typeof tokenValue !== 'string') {
+    for (const tokenValue of Object.values(value.tokens)) {
+        if (typeof tokenValue !== 'string') {
             return null;
         }
     }
     const accessToken = value.tokens.accessToken;
-    if (typeof accessToken !== 'string' || !accessToken.trim() || !miniMaxTokenIdentity(accessToken)) {
+    if (typeof accessToken !== 'string' || !accessToken.trim()) {
         return null;
     }
-    return value as MiniMaxConfig;
+    const config = value as MiniMaxConfig;
+    return miniMaxConfigIdentity(config) ? config : null;
 };
 
 const md5 = (value: string) => createHash('md5').update(value).digest('hex');
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
+const MCODE_OAUTH_CLIENT_ID = 'mcode-public';
+const MCODE_OAUTH_SCOPES = ['agent.default'];
+const MCODE_OAUTH_AUDIENCE = 'agent-backend';
+const MCODE_OAUTH_TOKEN_TYPE = 'Bearer';
+
+type MiniMaxOAuthCredential = {
+    accessToken: string;
+    expiresAtMs: number;
+    generation: number;
+    loginEpoch?: string;
+    refreshToken: string;
+    tokenType: typeof MCODE_OAUTH_TOKEN_TYPE;
+};
+
+const miniMaxOAuthPaths = () => {
+    const authHome = join(MINIMAX_DATA_DIR, 'auth');
+    const namespaceHome = join(authHome, MINIMAX_OAUTH_BUILD_ENV, MINIMAX_OAUTH_REGION, MCODE_OAUTH_CLIENT_ID);
+    const account = createHash('sha256').update(`${authHome}\0${MCODE_OAUTH_CLIENT_ID}`).digest('base64url');
+    return {
+        credentialPath: join(namespaceHome, 'auth.json'),
+        namespaceHome,
+        recordKey: `com.minimax.mcode.oauth.${MINIMAX_OAUTH_BUILD_ENV}.${MINIMAX_OAUTH_REGION}\0${account}`,
+        statePath: join(namespaceHome, 'auth-state.json'),
+    };
+};
+
+const parseOAuthCredential = (value: unknown): MiniMaxOAuthCredential | null => {
+    if (!isRecord(value)) {
+        return null;
+    }
+    if (typeof value.accessToken !== 'string' || !value.accessToken.trim()) {
+        return null;
+    }
+    if (typeof value.refreshToken !== 'string' || !value.refreshToken.trim()) {
+        return null;
+    }
+    if (value.tokenType !== MCODE_OAUTH_TOKEN_TYPE) {
+        return null;
+    }
+    if (typeof value.expiresAtMs !== 'number' || !Number.isFinite(value.expiresAtMs)) {
+        return null;
+    }
+    const generation = value.generation;
+    if (typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 0) {
+        return null;
+    }
+    return {
+        accessToken: value.accessToken,
+        expiresAtMs: value.expiresAtMs,
+        generation,
+        refreshToken: value.refreshToken,
+        tokenType: MCODE_OAUTH_TOKEN_TYPE,
+        ...(typeof value.loginEpoch === 'string' && value.loginEpoch ? { loginEpoch: value.loginEpoch } : {}),
+    };
+};
+
+const readMiniMaxOAuthCredential = async (): Promise<MiniMaxOAuthCredential | null> => {
+    const paths = miniMaxOAuthPaths();
+    const text = await readBoundedLocalText(paths.credentialPath);
+    if (!text) {
+        return null;
+    }
+    let value: unknown;
+    try {
+        value = JSON.parse(text);
+    } catch {
+        return null;
+    }
+    if (!isRecord(value) || !isRecord(value.records)) {
+        return null;
+    }
+    const preferred = parseOAuthCredential(value.records[paths.recordKey]);
+    if (preferred) {
+        return preferred;
+    }
+    for (const record of Object.values(value.records)) {
+        const parsed = parseOAuthCredential(record);
+        if (parsed) {
+            return parsed;
+        }
+    }
+    return null;
+};
+
+export const mergeMiniMaxOAuthIntoConfig = (text: string, oauth: MiniMaxOAuthCredential): string => {
+    let value: unknown;
+    try {
+        value = JSON.parse(text);
+    } catch {
+        return text;
+    }
+    if (!isRecord(value)) {
+        return text;
+    }
+    const tokens = isRecord(value.tokens) ? value.tokens : {};
+    const next = {
+        ...value,
+        tokens: {
+            ...tokens,
+            accessToken: oauth.accessToken,
+            expiresAtMs: String(oauth.expiresAtMs),
+            generation: String(oauth.generation),
+            refreshToken: oauth.refreshToken,
+            tokenType: oauth.tokenType,
+            ...(oauth.loginEpoch ? { loginEpoch: oauth.loginEpoch } : {}),
+        },
+    };
+    return JSON.stringify(next);
+};
+
+export const hydrateMiniMaxConfig = async (text: string): Promise<string> => {
+    const config = parseMiniMaxConfig(text);
+    if (config && config.tokens.tokenType !== MCODE_OAUTH_TOKEN_TYPE) {
+        return text;
+    }
+    const oauth = await readMiniMaxOAuthCredential();
+    return oauth ? mergeMiniMaxOAuthIntoConfig(text, oauth) : text;
+};
+
+export const refreshMiniMaxConfig = async (config: MiniMaxConfig): Promise<MiniMaxConfig> => {
+    if (config.tokens.tokenType !== MCODE_OAUTH_TOKEN_TYPE || !config.tokens.refreshToken) {
+        return config;
+    }
+    const oauth = await readMiniMaxOAuthCredential();
+    if (
+        oauth &&
+        config.tokens.loginEpoch &&
+        oauth.loginEpoch === config.tokens.loginEpoch &&
+        oauth.generation >= Number(config.tokens.generation)
+    ) {
+        config = JSON.parse(mergeMiniMaxOAuthIntoConfig(JSON.stringify(config), oauth)) as MiniMaxConfig;
+    }
+    if (Number(config.tokens.expiresAtMs) > Date.now() + 30_000) {
+        return config;
+    }
+    const response = await fetch(MINIMAX_OAUTH_TOKEN_URL, {
+        body: new URLSearchParams({
+            audience: MCODE_OAUTH_AUDIENCE,
+            client_id: MCODE_OAUTH_CLIENT_ID,
+            grant_type: 'refresh_token',
+            refresh_token: config.tokens.refreshToken as string,
+            scope: MCODE_OAUTH_SCOPES.join(' '),
+        }),
+        headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+        method: 'POST',
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    }).catch(() => {
+        throw publicError(502, 'MiniMax token refresh request failed. Try again.');
+    });
+    const payload = await readBoundedResponseJson<unknown>(response, 'MiniMax token refresh').catch(() => null);
+    if (!response.ok || !isRecord(payload) || payload.error) {
+        throw publicError(
+            response.status === 400 || response.status === 401 ? 401 : 502,
+            'MiniMax session could not be refreshed. Sign into MiniMax and sync this account again.',
+        );
+    }
+    return refreshedMiniMaxConfig(config, payload);
+};
+
+const refreshedMiniMaxConfig = (config: MiniMaxConfig, payload: Record<string, unknown>): MiniMaxConfig => {
+    const scopes = typeof payload.scope === 'string' ? payload.scope.split(/\s+/u) : payload.scope;
+    const refreshToken = payload.refresh_token ?? config.tokens.refreshToken;
+    if (
+        typeof payload.access_token !== 'string' ||
+        !payload.access_token.trim() ||
+        typeof refreshToken !== 'string' ||
+        !refreshToken.trim() ||
+        typeof payload.token_type !== 'string' ||
+        payload.token_type.toLowerCase() !== 'bearer' ||
+        typeof payload.expires_in !== 'number' ||
+        !Number.isFinite(payload.expires_in) ||
+        payload.expires_in <= 0 ||
+        (scopes !== undefined && (!Array.isArray(scopes) || !scopes.includes('agent.default')))
+    ) {
+        throw publicError(502, 'MiniMax token refresh returned an invalid credential');
+    }
+    return JSON.parse(
+        mergeMiniMaxOAuthIntoConfig(JSON.stringify(config), {
+            accessToken: payload.access_token,
+            expiresAtMs: Date.now() + payload.expires_in * 1_000,
+            generation: (Number(config.tokens.generation) || 0) + 1,
+            refreshToken,
+            tokenType: MCODE_OAUTH_TOKEN_TYPE,
+            ...(config.tokens.loginEpoch ? { loginEpoch: config.tokens.loginEpoch } : {}),
+        }),
+    ) as MiniMaxConfig;
+};
+
+const oauthCredentialFromConfig = (config: MiniMaxConfig): MiniMaxOAuthCredential | null => {
+    const refreshToken = config.tokens.refreshToken;
+    if (typeof refreshToken !== 'string' || !refreshToken.trim()) {
+        return null;
+    }
+    const expiresAtMs = Number(config.tokens.expiresAtMs);
+    const generation = Number(config.tokens.generation);
+    return {
+        accessToken: config.tokens.accessToken,
+        expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : Date.now() - 1,
+        generation: Number.isSafeInteger(generation) && generation >= 0 ? generation : 1,
+        refreshToken,
+        tokenType: MCODE_OAUTH_TOKEN_TYPE,
+        ...(config.tokens.loginEpoch ? { loginEpoch: config.tokens.loginEpoch } : {}),
+    };
+};
+
+export const readMiniMaxOAuthSidecar = async (): Promise<MiniMaxOAuthSidecar> => {
+    const paths = miniMaxOAuthPaths();
+    return {
+        credential: await readBoundedLocalText(paths.credentialPath),
+        state: await readBoundedLocalText(paths.statePath),
+    };
+};
+
+const restorePrivateFile = async (path: string, text: string | null) => {
+    if (text === null) {
+        await rm(path, { force: true });
+        return;
+    }
+    await writePrivateFile(path, text);
+};
+
+export const restoreMiniMaxOAuthSidecar = async (sidecar: MiniMaxOAuthSidecar) => {
+    const paths = miniMaxOAuthPaths();
+    await restorePrivateFile(paths.credentialPath, sidecar.credential);
+    await restorePrivateFile(paths.statePath, sidecar.state);
+};
+
+export const writeMiniMaxOAuthSidecar = async (config: MiniMaxConfig) => {
+    const oauth = oauthCredentialFromConfig(config);
+    if (!oauth) {
+        return false;
+    }
+    const paths = miniMaxOAuthPaths();
+    await writePrivateFile(
+        paths.credentialPath,
+        `${JSON.stringify(
+            {
+                records: {
+                    [paths.recordKey]: {
+                        accessToken: oauth.accessToken,
+                        audience: MCODE_OAUTH_AUDIENCE,
+                        clientId: MCODE_OAUTH_CLIENT_ID,
+                        expiresAtMs: oauth.expiresAtMs,
+                        generation: oauth.generation,
+                        refreshToken: oauth.refreshToken,
+                        schemaVersion: 1,
+                        scopes: MCODE_OAUTH_SCOPES,
+                        tokenType: oauth.tokenType,
+                        ...(oauth.loginEpoch ? { loginEpoch: oauth.loginEpoch } : {}),
+                    },
+                },
+                schemaVersion: 1,
+            },
+            null,
+            2,
+        )}\n`,
+    );
+    await writePrivateFile(
+        paths.statePath,
+        `${JSON.stringify(
+            {
+                audience: MCODE_OAUTH_AUDIENCE,
+                buildEnv: MINIMAX_OAUTH_BUILD_ENV,
+                clientId: MCODE_OAUTH_CLIENT_ID,
+                expiresAtMs: oauth.expiresAtMs,
+                generation: oauth.generation,
+                region: MINIMAX_OAUTH_REGION,
+                schemaVersion: 2,
+                scopes: MCODE_OAUTH_SCOPES,
+                status: 'authenticated',
+                storeKind: 'file',
+            },
+            null,
+            2,
+        )}\n`,
+    );
+    await chmod(paths.namespaceHome, 0o700);
+    return true;
 };
 
 type LevelDbScanResult = {
@@ -307,6 +628,7 @@ const signedAgentRequest = async (
     const body = method === 'POST' ? '{}' : '';
     return fetch(new URL(requestPath, MINIMAX_AGENT_URL), {
         headers: {
+            Authorization: `Bearer ${accessToken}`,
             'Content-Type': 'application/json',
             token: accessToken,
             'x-signature': md5(`${timestamp}${SIGNATURE_SECRET}${body}`),
@@ -321,11 +643,8 @@ const signedAgentRequest = async (
 
 type AgentIdentityResult = { realUserId: string } | { response: Response };
 
-const resolveAgentIdentity = async (accessToken: string): Promise<AgentIdentityResult | null> => {
-    const accountId = miniMaxTokenIdentity(accessToken);
-    if (!accountId) {
-        return null;
-    }
+const resolveAgentIdentity = async (accessToken: string, fallbackUserId = ''): Promise<AgentIdentityResult | null> => {
+    const accountId = miniMaxTokenIdentity(accessToken) || fallbackUserId || '0';
     const userInfoResponse = await signedAgentRequest(accessToken, USER_INFO_PATH, 'GET', accountId);
     if (!userInfoResponse?.ok) {
         return userInfoResponse ? { response: userInfoResponse } : null;
@@ -591,8 +910,12 @@ const checkInStatus = (status: number): MiniMaxCheckInResult['status'] => {
     return 'upcoming';
 };
 
-const resolvedIdentity = async (accessToken: string, onResolved?: MiniMaxIdentityOptions['onRealUserIdResolved']) => {
-    const identity = await resolveAgentIdentity(accessToken);
+const resolvedIdentity = async (
+    accessToken: string,
+    onResolved?: MiniMaxIdentityOptions['onRealUserIdResolved'],
+    fallbackUserId = '',
+) => {
+    const identity = await resolveAgentIdentity(accessToken, fallbackUserId);
     if (!identity) {
         throw miniMaxCheckInFailure('Saved MiniMax access token has no readable user identity', 'definitive');
     }
@@ -611,7 +934,7 @@ const resolvedIdentity = async (accessToken: string, onResolved?: MiniMaxIdentit
 };
 
 export const resolveMiniMaxRealUserId = async (config: MiniMaxConfig) => {
-    return resolvedIdentity(config.tokens.accessToken);
+    return resolvedIdentity(config.tokens.accessToken, undefined, miniMaxConfigIdentity(config));
 };
 
 class MiniMaxCachedIdentityError extends Error {}
@@ -715,10 +1038,11 @@ const checkInWithIdentity = async (accessToken: string, realUserId: string, mayR
 const performMiniMaxCheckIn = async (
     accessToken: string,
     options: MiniMaxIdentityOptions,
+    fallbackUserId = '',
 ): Promise<{ realUserId: string; result: MiniMaxCheckInResult }> => {
     const suppliedRealUserId = options.realUserId?.trim();
     if (!suppliedRealUserId) {
-        const realUserId = await resolvedIdentity(accessToken);
+        const realUserId = await resolvedIdentity(accessToken, undefined, fallbackUserId);
         return { realUserId, result: await checkInWithIdentity(accessToken, realUserId) };
     }
     try {
@@ -730,7 +1054,7 @@ const performMiniMaxCheckIn = async (
         if (!(error instanceof MiniMaxCachedIdentityError)) {
             throw error;
         }
-        const realUserId = await resolvedIdentity(accessToken);
+        const realUserId = await resolvedIdentity(accessToken, undefined, fallbackUserId);
         return { realUserId, result: await checkInWithIdentity(accessToken, realUserId) };
     }
 };
@@ -740,7 +1064,7 @@ export const checkInMiniMax = async (
     options: MiniMaxIdentityOptions = {},
 ): Promise<MiniMaxCheckInResult> => {
     const accessToken = config.tokens.accessToken;
-    const tokenIdentity = miniMaxTokenIdentity(accessToken);
+    const tokenIdentity = miniMaxConfigIdentity(config);
     if (!tokenIdentity) {
         throw miniMaxCheckInFailure('Saved MiniMax access token has no readable user identity', 'definitive');
     }
@@ -750,11 +1074,11 @@ export const checkInMiniMax = async (
         await options.onRealUserIdResolved?.(realUserId);
         return result;
     }
-    const pending = performMiniMaxCheckIn(accessToken, options).catch((error: unknown) => {
+    const pending = performMiniMaxCheckIn(accessToken, options, tokenIdentity).catch((error: unknown) => {
         if (isMiniMaxCheckInFailure(error)) {
             throw error;
         }
-        throw miniMaxCheckInFailure(error instanceof Error ? error.message : 'MiniMax check-in failed', 'transient');
+        throw miniMaxCheckInFailure('MiniMax check-in request failed. Try again.', 'transient');
     }) as MiniMaxCheckInPending;
     checkInPromises.set(tokenIdentity, pending);
     try {
@@ -864,7 +1188,7 @@ const fetchPlanUsage = async (accessToken: string): Promise<LimitResult> => {
     let response: Response;
     try {
         response = await fetch(new URL(REMAINS_PATH, MINIMAX_PLATFORM_URL), {
-            headers: { token: accessToken },
+            headers: { Authorization: `Bearer ${accessToken}`, token: accessToken },
             signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
     } catch {
@@ -881,9 +1205,12 @@ const fetchPlanUsage = async (accessToken: string): Promise<LimitResult> => {
     }
 };
 
-const fetchAgentIdentity = async (accessToken: string): Promise<AgentIdentityResult | LimitResult | null> => {
+const fetchAgentIdentity = async (
+    accessToken: string,
+    fallbackUserId = '',
+): Promise<AgentIdentityResult | LimitResult | null> => {
     try {
-        const identity = await resolveAgentIdentity(accessToken);
+        const identity = await resolveAgentIdentity(accessToken, fallbackUserId);
         if (!identity || !('response' in identity)) {
             return identity;
         }
@@ -920,8 +1247,9 @@ const fetchLimitsWithIdentity = async (accessToken: string, realUserId: string):
 const resolvedLimitIdentity = async (
     accessToken: string,
     onResolved?: MiniMaxIdentityOptions['onRealUserIdResolved'],
+    fallbackUserId = '',
 ): Promise<LimitResult | string> => {
-    const identity = await fetchAgentIdentity(accessToken);
+    const identity = await fetchAgentIdentity(accessToken, fallbackUserId);
     if (!identity) {
         return { error: 'Saved MiniMax access token has no readable user identity', ok: false };
     }
@@ -944,15 +1272,16 @@ export const fetchMiniMaxLimits = async (
     options: MiniMaxIdentityOptions = {},
 ): Promise<LimitResult> => {
     const accessToken = config.tokens.accessToken;
+    const fallbackUserId = miniMaxConfigIdentity(config);
     const suppliedRealUserId = options.realUserId?.trim();
     if (!suppliedRealUserId) {
-        const identity = await resolvedLimitIdentity(accessToken, options.onRealUserIdResolved);
+        const identity = await resolvedLimitIdentity(accessToken, options.onRealUserIdResolved, fallbackUserId);
         return typeof identity === 'string' ? fetchLimitsWithIdentity(accessToken, identity) : identity;
     }
     const result = await fetchLimitsWithIdentity(accessToken, suppliedRealUserId);
     if (!limitResultMayHaveStaleIdentity(result)) {
         return result;
     }
-    const identity = await resolvedLimitIdentity(accessToken, options.onRealUserIdResolved);
+    const identity = await resolvedLimitIdentity(accessToken, options.onRealUserIdResolved, fallbackUserId);
     return typeof identity === 'string' ? fetchLimitsWithIdentity(accessToken, identity) : identity;
 };

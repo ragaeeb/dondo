@@ -17,13 +17,18 @@ import type { LimitResult, MinimaxSnapshot, MinimaxVault } from '../types.ts';
 import {
     checkInMiniMax,
     fetchMiniMaxLimits,
+    hydrateMiniMaxConfig,
     isMiniMaxCheckInFailureDefinitive,
     isMiniMaxCheckInFailureTolerable,
     type MiniMaxCheckInResult,
     type MiniMaxConfig,
-    miniMaxTokenIdentity,
+    miniMaxConfigIdentity,
     parseMiniMaxConfig,
+    readMiniMaxOAuthSidecar,
+    refreshMiniMaxConfig,
     resolveMiniMaxRealUserId,
+    restoreMiniMaxOAuthSidecar,
+    writeMiniMaxOAuthSidecar,
 } from './usage.ts';
 
 type MiniMaxLimitUpdate = {
@@ -53,14 +58,15 @@ type MiniMaxCheckInUpdate = {
 const queueMiniMaxCycle = createAsyncQueue();
 
 const liveConfig = async () => {
-    return (await readBoundedLocalText(MINIMAX_CONFIG_PATH)) ?? '';
+    const text = (await readBoundedLocalText(MINIMAX_CONFIG_PATH)) ?? '';
+    return text ? await hydrateMiniMaxConfig(text) : '';
 };
 
 const parseConfig = (config: string) => {
     return parseMiniMaxConfig(config);
 };
 
-const identity = (config: MiniMaxConfig | null) => (config ? miniMaxTokenIdentity(config.tokens.accessToken) : '');
+const identity = (config: MiniMaxConfig | null) => (config ? miniMaxConfigIdentity(config) : '');
 
 const isSameConfig = (a: MiniMaxConfig | null, b: MiniMaxConfig | null) => {
     const aIdentity = identity(a);
@@ -118,20 +124,25 @@ const fetchMiniMaxLimitUpdates = async (section: MinimaxVault, force: boolean, t
         Object.entries(section.data).filter(([, snapshot]) => isReadableSnapshot(snapshot)),
     );
     const selected = selectRefreshEntries(readableData, section.limits, targetKey ? { force, targetKey } : { force });
-    return boundedMap(selected, async ([key, snapshot]): Promise<MiniMaxLimitUpdate> => {
-        const parsed = parseConfig(snapshot.config) as MiniMaxConfig;
+    return boundedMap(selected, async ([key, selectedSnapshot]): Promise<MiniMaxLimitUpdate> => {
+        let snapshot = selectedSnapshot;
         let realUserId: string | undefined;
-        const quota = await fetchMiniMaxLimits(parsed, {
-            onRealUserIdResolved: (resolved) => {
-                realUserId = resolved;
-            },
-            ...(snapshot.realUserId ? { realUserId: snapshot.realUserId } : {}),
-        }).catch((error) => cleanLimitError(error));
+        const quota = await (async () => {
+            snapshot = await withPlatformMutationLock('minimax', () => refreshMinimaxSnapshot(key));
+            return fetchMiniMaxLimits(parseConfig(snapshot.config) as MiniMaxConfig, {
+                onRealUserIdResolved: (resolved) => {
+                    realUserId = resolved;
+                },
+                ...(snapshot.realUserId ? { realUserId: snapshot.realUserId } : {}),
+            });
+        })().catch((error) => cleanLimitError(error));
         return {
             key,
             quota,
             ...(realUserId ? { realUserId } : {}),
-            sourceLimitVersion: stateVersion(section.limits[key] ?? null),
+            sourceLimitVersion: stateVersion(
+                stateVersion(snapshot) === stateVersion(selectedSnapshot) ? (section.limits[key] ?? null) : null,
+            ),
             sourceSnapshotVersion: stateVersion(snapshot),
         };
     });
@@ -146,7 +157,8 @@ const saveMinimaxMutation = async (key: string) => {
     if (!config.trim()) {
         throw publicError(400, `${MINIMAX_CONFIG_PATH} is empty`);
     }
-    const parsedConfig = parseConfig(config);
+    const hydrated = await hydrateMiniMaxConfig(config);
+    const parsedConfig = parseConfig(hydrated);
     if (!parsedConfig) {
         throw publicError(400, `${MINIMAX_CONFIG_PATH} is not valid MiniMax config JSON`);
     }
@@ -159,7 +171,7 @@ const saveMinimaxMutation = async (key: string) => {
         }
         const now = new Date().toISOString();
         section.data[safeKey] = {
-            config,
+            config: hydrated,
             createdAt: existing?.createdAt ?? now,
             ...(resolvedRealUserId
                 ? { realUserId: resolvedRealUserId }
@@ -184,8 +196,39 @@ type MiniMaxCandidate = {
 
 const readMinimaxCandidate = async (key: string): Promise<MiniMaxCandidate> => {
     const safeKey = assertAccountKey(key);
-    const snapshot = assertReadableAccount(await readVaultSection('minimax'), safeKey);
+    const snapshot = await refreshMinimaxSnapshot(safeKey);
     return { config: parseConfig(snapshot.config) as MiniMaxConfig, key: safeKey, snapshot };
+};
+
+// Call under the platform lock; persist rotated refresh tokens before any later request can fail.
+const refreshMinimaxSnapshot = async (key: string) => {
+    const snapshot = assertReadableAccount(await readVaultSection('minimax'), key);
+    const parsed = parseConfig(snapshot.config) as MiniMaxConfig;
+    const refreshed = await refreshMiniMaxConfig(parsed);
+    if (stateVersion(parsed) === stateVersion(refreshed)) {
+        return snapshot;
+    }
+    const savedSnapshot = await updateVaultSection('minimax', (section) => {
+        for (const [label, saved] of Object.entries(section.data)) {
+            const config = parseConfig(saved.config);
+            if (config?.tokens.accessToken !== parsed.tokens.accessToken) {
+                continue;
+            }
+            saved.config = JSON.stringify({ ...config, tokens: refreshed.tokens });
+            saved.updatedAt = new Date().toISOString();
+            delete section.limits[label];
+        }
+        return { result: assertReadableAccount(section, key) };
+    });
+    const live = parseConfig(await liveConfig());
+    if (
+        refreshed.tokens.loginEpoch &&
+        live?.tokens.loginEpoch === refreshed.tokens.loginEpoch &&
+        Number(live.tokens.generation) < Number(refreshed.tokens.generation)
+    ) {
+        await writeMiniMaxOAuthSidecar(refreshed);
+    }
+    return savedSnapshot;
 };
 
 const changedMinimaxDataKeys = (before: MinimaxVault, after: MinimaxVault, tokenIdentity: string) => {
@@ -299,7 +342,14 @@ const persistMinimaxCandidate = async ({ config, key, snapshot }: MiniMaxCandida
         return { result: section, write: identityChanged || limitsChanged };
     });
     const previousLiveConfig = await readBoundedLocalText(MINIMAX_CONFIG_PATH);
+    const hasOAuthTokens = Boolean(config.tokens.refreshToken?.trim());
+    const previousOAuth = hasOAuthTokens ? await readMiniMaxOAuthSidecar() : { credential: null, state: null };
+    let wroteOAuth = false;
     try {
+        if (hasOAuthTokens) {
+            wroteOAuth = true;
+            await writeMiniMaxOAuthSidecar(config);
+        }
         await writePrivateFile(MINIMAX_CONFIG_PATH, snapshot.config);
     } catch (error) {
         let rollbackFailed = false;
@@ -311,6 +361,13 @@ const persistMinimaxCandidate = async ({ config, key, snapshot }: MiniMaxCandida
             }
         } catch {
             rollbackFailed = true;
+        }
+        if (wroteOAuth) {
+            try {
+                await restoreMiniMaxOAuthSidecar(previousOAuth);
+            } catch {
+                rollbackFailed = true;
+            }
         }
         try {
             await rollbackMinimaxVault(before, persisted, tokenIdentity);
@@ -403,14 +460,21 @@ export const deleteMinimax = async (key: string) =>
 
 const checkInMinimaxMutation = async (key?: string) => {
     const safeKey = key ? assertAccountKey(key) : undefined;
-    const section = await readVaultSection('minimax');
     let configText: string;
 
-    const saved = safeKey ? assertReadableAccount(section, safeKey) : undefined;
+    const saved = safeKey ? await refreshMinimaxSnapshot(safeKey) : undefined;
     if (saved) {
         configText = saved.config;
     } else {
         configText = await liveConfig();
+        const live = parseConfig(configText);
+        if (live) {
+            const refreshed = await refreshMiniMaxConfig(live);
+            if (stateVersion(live) !== stateVersion(refreshed)) {
+                await writeMiniMaxOAuthSidecar(refreshed);
+                configText = JSON.stringify(refreshed);
+            }
+        }
     }
 
     const config = parseConfig(configText);
@@ -442,13 +506,13 @@ export const checkInMinimax = async (key?: string) =>
 
 const checkInAllMinimaxMutation = async (): Promise<MiniMaxCheckInAllResult> => {
     const section = await readVaultSection('minimax');
-    const uniqueConfigs = new Map<string, { config: MiniMaxConfig; realUserId?: string }>();
-    for (const snapshot of Object.values(section.data)) {
+    const uniqueConfigs = new Map<string, { key: string; realUserId?: string }>();
+    for (const [key, snapshot] of Object.entries(section.data)) {
         const config = parseConfig(snapshot.config);
         const tokenIdentity = identity(config);
         if (config && tokenIdentity && !uniqueConfigs.has(tokenIdentity)) {
             uniqueConfigs.set(tokenIdentity, {
-                config,
+                key,
                 ...(snapshot.realUserId ? { realUserId: snapshot.realUserId } : {}),
             });
         }
@@ -459,7 +523,8 @@ const checkInAllMinimaxMutation = async (): Promise<MiniMaxCheckInAllResult> => 
         async ([tokenIdentity, saved]): Promise<MiniMaxCheckInUpdate> => {
             let realUserId: string | undefined;
             try {
-                const result = await checkInMiniMax(saved.config, {
+                const snapshot = await refreshMinimaxSnapshot(saved.key);
+                const result = await checkInMiniMax(parseConfig(snapshot.config) as MiniMaxConfig, {
                     onRealUserIdResolved: (resolved) => {
                         realUserId = resolved;
                     },
