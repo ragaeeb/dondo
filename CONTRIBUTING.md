@@ -7,8 +7,12 @@ is available.
 
 ```sh
 bun install --frozen-lockfile
+git config core.hooksPath .githooks
 bun run dev
 ```
+
+The pre-commit hook runs `bun run lint` and blocks commits when it fails. It checks the working tree without modifying
+or staging files; it is not a secret scanner.
 
 The development watcher restarts the server for runtime TypeScript, TSX, CSS, package metadata, and icon changes. Test
 file edits do not restart it.
