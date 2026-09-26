@@ -348,3 +348,67 @@ it('should keep the active Antigravity account stable across token rotation', as
     `;
     expect(await runAntigravityScript(script)).toEqual(['second']);
 });
+
+it('should repair legacy Antigravity credentials before loading and leave live auth intact on repair failure', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dondo-antigravity-load-token-'));
+    const binaryPath = join(dir, 'language_server');
+    const clientSecret = `${'GO'}${'CSPX'}-${'1234567890'.repeat(2)}12345678`;
+    const clientId = `${'100000000000'}-test.${'apps.googleusercontent.com'}`;
+    await Bun.write(binaryPath, `${clientSecret} ${clientId}`);
+    const script = `
+        const { mock } = await import('bun:test');
+        const { decodeToken } = await import('./src/antigravity/google.ts');
+        const password = Buffer.from(JSON.stringify({
+            auth_method: 'consumer',
+            token: { access_token: 'still-valid', expiry: '2999-01-01T00:00:00.000Z', refresh_token: 'refresh' },
+        })).toString('base64');
+        const snapshot = {
+            account: 'antigravity', createdAt: '', identity: 'sms', kind: 'Generic Password',
+            label: 'gemini', password, service: 'gemini', updatedAt: '',
+        };
+        let mode = 'success';
+        const loaded = [];
+        globalThis.fetch = async (url) => {
+            if (String(url).includes('/tokeninfo')) {
+                return Response.json({ sub: mode === 'wrong-account' ? 'other' : 'sms' });
+            }
+            return Response.json({
+                access_token: 'new-access', expires_in: 3600,
+                ...(mode === 'missing-id' ? {} : { id_token: 'new-id-token' }),
+            });
+        };
+        mock.module('./src/storage/vault.ts', () => ({
+            readVaultSection: async () => ({ data: { saved: snapshot }, limits: {} }),
+            updateVaultSection: async () => undefined,
+        }));
+        mock.module('./src/antigravity/keychain.ts', () => ({
+            clearLiveAuth: async () => {},
+            readCurrentSnapshot: async () => snapshot,
+            replaceLiveSnapshot: async (next) => { loaded.push(decodeToken(next.password)); },
+        }));
+        const { loadAntigravity } = await import('./src/antigravity/service.ts');
+        await loadAntigravity('saved');
+        mode = 'missing-id';
+        const missingRejected = await loadAntigravity('saved').then(() => false, () => true);
+        mode = 'wrong-account';
+        const mismatchRejected = await loadAntigravity('saved').then(() => false, () => true);
+        console.log(JSON.stringify({ loaded, missingRejected, mismatchRejected }));
+    `;
+    try {
+        const result = await runAntigravityScript(script, { ANTIGRAVITY_LANGUAGE_SERVER_PATH: binaryPath });
+        expect(result).toMatchObject({
+            loaded: [
+                {
+                    auth_method: 'consumer',
+                    id_token: 'new-id-token',
+                    token: { access_token: 'new-access', refresh_token: 'refresh' },
+                },
+            ],
+            mismatchRejected: true,
+            missingRejected: true,
+        });
+        expect((result as { loaded: unknown[] }).loaded).toHaveLength(1);
+    } finally {
+        await rm(dir, { force: true, recursive: true });
+    }
+});

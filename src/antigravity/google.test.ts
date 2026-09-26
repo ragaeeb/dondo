@@ -415,7 +415,7 @@ it('should refresh expired Antigravity access tokens and return an updated snaps
         const target = String(url);
         calls.push(target);
         if (target.includes('/token')) {
-            return Response.json({ access_token: 'new-access', expires_in: 3600 });
+            return Response.json({ access_token: 'new-access', expires_in: 3600, id_token: 'new-id-token' });
         }
         if (target.includes('loadCodeAssist')) {
             const headers = init?.headers as Record<string, string> | undefined;
@@ -457,6 +457,7 @@ it('should refresh expired Antigravity access tokens and return an updated snaps
 
         expect(result.quota.ok).toBe(true);
         expect(decodeToken(result.password ?? '')?.token?.access_token).toBe('new-access');
+        expect(decodeToken(result.password ?? '')).toHaveProperty('id_token', 'new-id-token');
         expect(calls.filter((call) => call.includes('/token'))).toHaveLength(1);
     } finally {
         await rm(dir, { force: true, recursive: true });
@@ -508,7 +509,7 @@ it('should force refresh Antigravity tokens after a 401 project response', async
         const target = String(url);
         calls.push(target);
         if (target.includes('/token')) {
-            return Response.json({ access_token: 'new-access', expires_in: 3600 });
+            return Response.json({ access_token: 'new-access', expires_in: 3600, id_token: 'new-id-token' });
         }
         if (target.includes('loadCodeAssist') && calls.filter((call) => call.includes('loadCodeAssist')).length === 1) {
             return new Response('', { status: 401, statusText: 'Unauthorized' });
@@ -551,6 +552,7 @@ it('should force refresh Antigravity tokens after a 401 project response', async
 
         expect(result.quota.ok).toBe(true);
         expect(decodeToken(result.password ?? '')?.token?.access_token).toBe('new-access');
+        expect(decodeToken(result.password ?? '')).toHaveProperty('id_token', 'new-id-token');
         expect(calls.filter((call) => call.includes('loadCodeAssist'))).toHaveLength(2);
         expect(calls.filter((call) => call.includes('/token'))).toHaveLength(1);
     } finally {
