@@ -11,16 +11,16 @@
         "url": "https://github.com/ragaeeb/dondo/issues"
     },
     "dependencies": {
-        "preact": "10.29.8"
+        "preact": "11.0.0"
     },
     "description": "Encrypted local account switcher for Antigravity, Codex, Cline, Kiro, and MiniMax on macOS.",
     "devDependencies": {
-        "@biomejs/biome": "2.5.13",
+        "@biomejs/biome": "2.5.15",
         "@types/bun": "1.4.2",
         "typescript": "7.0.2"
     },
     "engines": {
-        "bun": ">=1.3.14"
+        "bun": ">=1.4.2"
     },
     "files": [
         "LICENSE",
@@ -54,7 +54,7 @@
     "os": [
         "darwin"
     ],
-    "packageManager": "bun@1.3.14",
+    "packageManager": "bun@1.4.2",
     "repository": {
         "type": "git",
         "url": "git+https://github.com/ragaeeb/dondo.git"
@@ -71,5 +71,5 @@
         "typecheck": "tsc --noEmit"
     },
     "type": "module",
-    "version": "0.6.1"
+    "version": "0.6.2"
 }

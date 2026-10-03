@@ -158,7 +158,20 @@ export const saveAntigravity = (key: string) => queueAntigravityOperation(() => 
 const loadAntigravityOperation = async (key: string) => {
     const safeKey = assertAccountKey(key);
     await assertAntigravityClosed();
-    const snapshot = assertReadableAccount(await readVaultSection('antigravity'), safeKey);
+    let snapshot = assertReadableAccount(await readVaultSection('antigravity'), safeKey);
+    const payload = decodeToken(snapshot.password);
+    if (DEV_MODE !== 'mock' && !payload?.id_token && payload?.token?.refresh_token) {
+        const resolved = await resolveGoogleIdentity(snapshot, { requireIdToken: true }).catch(() => {
+            throw publicError(
+                502,
+                'Could not refresh the saved Antigravity login. Sign in again, then sync this account.',
+            );
+        });
+        if (resolved.identity !== snapshot.identity) {
+            throw publicError(409, 'Refreshed Antigravity login does not match the saved account');
+        }
+        snapshot = { ...snapshot, password: resolved.password ?? snapshot.password };
+    }
     await replaceLiveSnapshot(snapshot);
     liveIdentityCache = { identity: snapshot.identity, passwordVersion: stateVersion(snapshot.password) };
 };

@@ -20,6 +20,7 @@ export type TokenPayload = {
         token_type?: string;
     };
     auth_method?: string;
+    id_token?: string;
 };
 
 export type ModelLimit = {

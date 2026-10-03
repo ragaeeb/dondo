@@ -11,6 +11,7 @@ type FetchLimitsResult = {
 type GoogleRefreshResponse = {
     access_token?: string;
     expires_in?: number;
+    id_token?: string;
     refresh_token?: string;
 };
 
@@ -69,7 +70,7 @@ export const decodeToken = (password: string): TokenPayload | null => {
             return null;
         }
         const payload = value as Record<string, unknown>;
-        if (!hasOnlyStringFields(payload, ['auth_method']) || !isUsableToken(payload.token)) {
+        if (!hasOnlyStringFields(payload, ['auth_method', 'id_token']) || !isUsableToken(payload.token)) {
             return null;
         }
         return value as TokenPayload;
@@ -83,6 +84,9 @@ const parseRefreshResponse = (value: Record<string, unknown>): GoogleRefreshResp
         return null;
     }
     if (value.refresh_token !== undefined && (typeof value.refresh_token !== 'string' || !value.refresh_token.trim())) {
+        return null;
+    }
+    if (value.id_token !== undefined && (typeof value.id_token !== 'string' || !value.id_token.trim())) {
         return null;
     }
     if (
@@ -196,7 +200,7 @@ const validAccessToken = async (token: NonNullable<TokenPayload['token']>, force
         ...(nextExpiry ? { expiry: nextExpiry } : {}),
         refresh_token: refreshed.refresh_token ?? token.refresh_token,
     };
-    return { accessToken: refreshed.access_token, token: nextToken };
+    return { accessToken: refreshed.access_token, idToken: refreshed.id_token, token: nextToken };
 };
 
 const isHttp401 = (error: unknown) => String(error).includes('HTTP 401');
@@ -268,13 +272,21 @@ const resultWithAccessToken = async (
     token: NonNullable<TokenPayload['token']>,
     forceRefresh = false,
 ): Promise<FetchLimitsResult> => {
-    const { accessToken, token: refreshedToken } = await validAccessToken(token, forceRefresh);
+    const { accessToken, idToken, token: refreshedToken } = await validAccessToken(token, forceRefresh);
     if (!accessToken) {
         return { quota: staleTokenQuota };
     }
 
     return {
-        ...(refreshedToken ? { password: encodeToken(snap.password, { ...payload, token: refreshedToken }) } : {}),
+        ...(refreshedToken
+            ? {
+                  password: encodeToken(snap.password, {
+                      ...payload,
+                      ...(idToken ? { id_token: idToken } : {}),
+                      token: refreshedToken,
+                  }),
+              }
+            : {}),
         quota: await quotaWithAccessToken(accessToken, refreshedToken?.expiry ?? token.expiry ?? ''),
     };
 };
@@ -304,13 +316,23 @@ export const fetchLimits = async (snap: AntigravityCredential): Promise<FetchLim
     }
 };
 
-export const resolveGoogleIdentity = async (snap: AntigravityCredential) => {
+export const resolveGoogleIdentity = async (
+    snap: AntigravityCredential,
+    options: { requireIdToken?: boolean } = {},
+) => {
     const payload = decodeToken(snap.password);
     const token = payload?.token;
     if (!payload || !token) {
         throw new Error('Antigravity credential payload is invalid');
     }
-    const { accessToken, token: refreshedToken } = await validAccessToken(token);
+    const {
+        accessToken,
+        idToken,
+        token: refreshedToken,
+    } = await validAccessToken(token, options.requireIdToken === true && !payload.id_token);
+    if (options.requireIdToken && !(idToken ?? payload.id_token)) {
+        throw new Error('Antigravity credential has no ID token; sign in again and sync this account');
+    }
     if (!accessToken) {
         throw new Error('Antigravity credential has no usable access token');
     }
@@ -327,6 +349,14 @@ export const resolveGoogleIdentity = async (snap: AntigravityCredential) => {
     }
     return {
         identity: value.sub,
-        ...(refreshedToken ? { password: encodeToken(snap.password, { ...payload, token: refreshedToken }) } : {}),
+        ...(refreshedToken
+            ? {
+                  password: encodeToken(snap.password, {
+                      ...payload,
+                      ...(idToken ? { id_token: idToken } : {}),
+                      token: refreshedToken,
+                  }),
+              }
+            : {}),
     };
 };
